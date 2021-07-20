@@ -38,10 +38,12 @@ static void regAccumulatePass(pybind11::module& m)
     pybind11::class_<AccumulatePass, RenderPass, AccumulatePass::SharedPtr> pass(m, "AccumulatePass");
     pass.def("reset", &AccumulatePass::reset);
 
+
     pybind11::enum_<AccumulatePass::Precision> precision(m, "AccumulatePrecision");
     precision.value("Double", AccumulatePass::Precision::Double);
     precision.value("Single", AccumulatePass::Precision::Single);
     precision.value("SingleCompensated", AccumulatePass::Precision::SingleCompensated);
+    precision.value("SingleEWMA", AccumulatePass::Precision::SingleEWMA);
 }
 
 extern "C" __declspec(dllexport) void getPasses(Falcor::RenderPassLibrary& lib)
@@ -68,6 +70,7 @@ namespace
         { (uint32_t)AccumulatePass::Precision::Double, "Double precision" },
         { (uint32_t)AccumulatePass::Precision::Single, "Single precision" },
         { (uint32_t)AccumulatePass::Precision::SingleCompensated, "Single precision (compensated)" },
+        { (uint32_t)AccumulatePass::Precision::SingleEWMA, "Single EWMA" },
     };
 }
 
@@ -93,6 +96,7 @@ AccumulatePass::AccumulatePass(const Dictionary& dict)
     mpProgram[Precision::Double] = ComputeProgram::createFromFile(kShaderFile, "accumulateDouble", Program::DefineList(), Shader::CompilerFlags::TreatWarningsAsErrors);
     mpProgram[Precision::Single] = ComputeProgram::createFromFile(kShaderFile, "accumulateSingle", Program::DefineList(), Shader::CompilerFlags::TreatWarningsAsErrors);
     mpProgram[Precision::SingleCompensated] = ComputeProgram::createFromFile(kShaderFile, "accumulateSingleCompensated", Program::DefineList(), Shader::CompilerFlags::FloatingPointModePrecise | Shader::CompilerFlags::TreatWarningsAsErrors);
+    mpProgram[Precision::SingleEWMA] = ComputeProgram::createFromFile(kShaderFile, "accumulateSingleEWMA", Program::DefineList(), Shader::CompilerFlags::TreatWarningsAsErrors);
     mpVars = ComputeVars::create(mpProgram[Precision::Single]->getReflector());
 
     mpState = ComputeState::create();
@@ -195,6 +199,7 @@ void AccumulatePass::execute(RenderContext* pRenderContext, const RenderData& re
     mpVars["gLastFrameCorr"] = mpLastFrameCorr;
     mpVars["gLastFrameSumLo"] = mpLastFrameSumLo;
     mpVars["gLastFrameSumHi"] = mpLastFrameSumHi;
+    mpVars["gLastFrame"] = mpLastFrame;
 
     // Run the accumulation program.
     auto pProgram = mpProgram[mPrecisionMode];
@@ -207,6 +212,12 @@ void AccumulatePass::execute(RenderContext* pRenderContext, const RenderData& re
 void AccumulatePass::renderUI(Gui::Widgets& widget)
 {
     if (widget.checkbox("Accumulate temporally", mEnableAccumulation))
+    {
+        // Reset accumulation when it is toggled.
+        mFrameCount = 0;
+    }
+
+    if (widget.checkbox("Auto Reset", mAutoReset))
     {
         // Reset accumulation when it is toggled.
         mFrameCount = 0;
@@ -268,4 +279,5 @@ void AccumulatePass::prepareAccumulation(RenderContext* pRenderContext, uint32_t
     prepareBuffer(mpLastFrameCorr, ResourceFormat::RGBA32Float, mPrecisionMode == Precision::SingleCompensated);
     prepareBuffer(mpLastFrameSumLo, ResourceFormat::RGBA32Uint, mPrecisionMode == Precision::Double);
     prepareBuffer(mpLastFrameSumHi, ResourceFormat::RGBA32Uint, mPrecisionMode == Precision::Double);
+    prepareBuffer(mpLastFrame, ResourceFormat::RGBA32Float, mPrecisionMode == Precision::SingleEWMA);
 }

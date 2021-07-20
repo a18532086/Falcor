@@ -179,3 +179,11 @@ void rayGen(
     TraceRay(gRtScene, 0 /*rayFlags*/, 0xFF, 0 /* ray index*/, hitProgramCount, 0, ray, hitData);
     gOutput[launchIndex.xy] = hitData.color;
 }
+
+[shader("intersection")]
+void spriteIntersection()
+{
+    float3 rayOrigW = WorldRayOrigin();
+    float3 rayDirW = WorldRayDirection();
+    float THit = RayTCurrent();
+}

@@ -35,7 +35,7 @@ cbuffer PerEmit
 ConsumeStructuredBuffer<uint> deadList;
 RWStructuredBuffer<Particle> particlePool;
 StructuredBuffer<Particle> emitList;
-ByteAddressBuffer numAlive;
+RWByteAddressBuffer numAlive;
 
 [numthreads(kParticleEmitThreads, 1, 1)]
 void main(int3 groupID : SV_GroupID, int3 threadID : SV_GroupThreadID)

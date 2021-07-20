@@ -239,6 +239,29 @@ namespace Falcor
         pCtx->drawIndirect(mDrawResources.pState.get(), mDrawResources.pVars.get(), 1, mpIndirectArgs.get(), 0, nullptr, 0);
     }
 
+    void ParticleSystem::getParticlesVertexInfo(std::vector<AABB>& aabbs)
+    {
+
+        auto pCB = static_cast<const VSPerFrame*>(mDrawResources.pVars->getParameterBlock(mBindLocations.drawCB)->getRawData());
+
+        const auto pIndirectArgs = static_cast<uint32_t const (*)[4]>(mpIndirectArgs->map(Buffer::MapType::Read));
+
+        const uint32_t& instanceCount = (*pIndirectArgs)[1];
+
+        aabbs.resize(instanceCount);
+
+        auto pMappedAliveList = static_cast<const uint32_t*>(mpAliveList->map(Buffer::MapType::Read));
+
+        auto pMappedParticlePool = static_cast<const Particle*>(mpParticlePool->map(Buffer::MapType::Read));
+
+        for (uint32_t iID = 0;iID < instanceCount;++iID)
+        {
+            auto& pos = pMappedParticlePool[pMappedAliveList[iID]].pos;
+            aabbs[iID].minPoint = pos + float3(-1);
+            aabbs[iID].maxPoint = pos + float3(1);
+        }
+    }
+
     void ParticleSystem::renderUi(Gui::Widgets& widget)
     {
         if (auto g = widget.group("Particle System Settings"))

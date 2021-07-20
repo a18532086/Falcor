@@ -22,8 +22,11 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
+    <ShaderSource Include="ParticleInterpColor.ps.slang" />
     <ShaderSource Include="HelloDXR.ps.slang" />
     <ShaderSource Include="HelloDXR.rt.slang" />
+    <ShaderSource Include="ParticleTexture.ps.slang" />
+    <ShaderSource Include="ParticleConstColor.ps.slang" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{71B60B71-89A2-4196-BFB9-4A848CF6C541}</ProjectGuid>

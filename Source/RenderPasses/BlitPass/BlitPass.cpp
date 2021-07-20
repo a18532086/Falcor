@@ -94,6 +94,7 @@ void BlitPass::execute(RenderContext* pContext, const RenderData& renderData)
 {
     const auto& pSrcTex = renderData[kSrc]->asTexture();
     const auto& pDstTex = renderData[kDst]->asTexture();
+    
 
     if (pSrcTex && pDstTex)
     {

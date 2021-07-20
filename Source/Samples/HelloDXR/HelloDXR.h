@@ -41,21 +41,61 @@ public:
     void onGuiRender(Gui* pGui) override;
 
 private:
+    enum class ExamplePixelShaders
+    {
+        ConstColor = 0,
+        ColorInterp = 1,
+        Textured = 2,
+        Count
+    };
+
+    struct GuiData
+    {
+        int32_t mSystemIndex = -1;
+        uint32_t mPixelShaderIndex = 0;
+        bool mSortSystem = false;
+        int32_t mMaxParticles = 100;
+        int32_t mMaxEmitPerFrame = 100;
+        Gui::DropdownList mTexDropdown;
+    } mGuiData;
+
+    struct PixelShaderData
+    {
+        PixelShaderData(glm::vec4 color) { type = ExamplePixelShaders::ConstColor; colorData.color1 = color; }
+        PixelShaderData(ColorInterpPsPerFrame data) { type = ExamplePixelShaders::ColorInterp; colorData = data; }
+        PixelShaderData(uint32_t newTexIndex, ColorInterpPsPerFrame data)
+        {
+            type = ExamplePixelShaders::Textured;
+            texIndex = newTexIndex;
+            colorData = data;
+        }
+
+        ExamplePixelShaders type;
+        ColorInterpPsPerFrame colorData;
+        uint32_t texIndex;
+    };
+
     RasterScenePass::SharedPtr mpRasterPass;
     Scene::SharedPtr mpScene;
+    SceneBuilder::SharedPtr mpSceneBuilder;
 
     RtProgram::SharedPtr mpRaytraceProgram = nullptr;
     Camera::SharedPtr mpCamera;
+    ParticleSystem::SharedPtr mpPSys;
 
     bool mRayTrace = true;
     bool mUseDOF = false;
     RtProgramVars::SharedPtr mpRtVars;
     //RtSceneRenderer::SharedPtr mpRtRenderer;
     Texture::SharedPtr mpRtOut;
+    std::vector<ParticleSystem::SharedPtr> mpParticleSystems;
+    std::vector<PixelShaderData> mPsData;
+    std::vector<Texture::SharedPtr> mpTextures;
 
     uint32_t mSampleIndex = 0xdeadbeef;
 
     void setPerFrameVars(const Fbo* pTargetFbo);
     void renderRT(RenderContext* pContext, const Fbo* pTargetFbo);
     void loadScene(const std::string& filename, const Fbo* pTargetFbo);
+    void renderParticleSystem(RenderContext* pContext, const Fbo::SharedPtr& pTargetFbo);
 };

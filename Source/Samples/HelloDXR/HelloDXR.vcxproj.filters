@@ -9,5 +9,8 @@
   <ItemGroup>
     <ShaderSource Include="HelloDXR.ps.slang" />
     <ShaderSource Include="HelloDXR.rt.slang" />
+    <ShaderSource Include="ParticleConstColor.ps.slang" />
+    <ShaderSource Include="ParticleInterpColor.ps.slang" />
+    <ShaderSource Include="ParticleTexture.ps.slang" />
   </ItemGroup>
 </Project>

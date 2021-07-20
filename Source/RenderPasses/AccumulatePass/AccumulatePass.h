@@ -67,6 +67,7 @@ public:
         Double,                 ///< Standard summation in double precision.
         Single,                 ///< Standard summation in single precision.
         SingleCompensated,      ///< Compensated summation (Kahan summation) in single precision.
+        SingleEWMA,
     };
 
 protected:
@@ -85,6 +86,7 @@ protected:
     Texture::SharedPtr          mpLastFrameCorr;                ///< Last frame running compensation term. Used in SingleKahan mode.
     Texture::SharedPtr          mpLastFrameSumLo;               ///< Last frame running sum (lo bits). Used in Double mode.
     Texture::SharedPtr          mpLastFrameSumHi;               ///< Last frame running sum (hi bits). Used in Double mode.
+    Texture::SharedPtr          mpLastFrame;
 
     // UI variables
     bool                        mEnableAccumulation = true;     ///< UI control if accumulation is enabled.

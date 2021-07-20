@@ -51,6 +51,7 @@ RWTexture2D<float4> gLastFrameSum;      // If mode is Single or SingleKahan
 RWTexture2D<float4> gLastFrameCorr;     // If mode is SingleKahan
 RWTexture2D<uint4>  gLastFrameSumLo;    // If mode is Double
 RWTexture2D<uint4>  gLastFrameSumHi;    // If mode is Double
+RWTexture2D<float4> gLastFrame;      // If mode is Single or SingleKahan
 
 
 /** Single precision standard summation.
@@ -121,5 +122,24 @@ void accumulateDouble(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     gLastFrameSumLo[pixelPos] = sumLo;
     gLastFrameSumHi[pixelPos] = sumHi;
+    gOutputFrame[pixelPos] = output;
+}
+
+static const float kAlpha = 0.05;
+
+/** Single precision standard summation.
+*/
+[numthreads(16, 16, 1)]
+void accumulateSingleEWMA(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    if (any(dispatchThreadId.xy >= gResolution)) return;
+    const uint2 pixelPos = dispatchThreadId.xy;
+    const float4 curColor = gCurFrame[pixelPos];
+
+    // Fetch previous sum and compute the new sum.
+    float4 lastColor = gLastFrame[pixelPos];
+    float4 output = lastColor * (1 - kAlpha) + curColor * kAlpha;
+
+    gLastFrame[pixelPos] = output;
     gOutputFrame[pixelPos] = output;
 }

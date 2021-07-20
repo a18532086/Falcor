@@ -260,6 +260,8 @@ namespace Falcor
         */
         static SharedPtr create(const std::string& filename, Flags buildFlags = Flags::Default, const InstanceMatrices& instances = InstanceMatrices());
 
+        SharedPtr copy() const;
+
         /** Import a scene/model file
             \param filename The filename to load
             \param instances A list of instance matrices to load. This is optional, by default a single instance will be load
@@ -326,9 +328,37 @@ namespace Falcor
             \param[in] aabb An AABB describing the bounds of the primitive.
         */
         void addCustomPrimitive(uint32_t typeID, const AABB& aabb);
-
         // Curves
 
+    private:
+        SceneBuilder(const SceneBuilder& other)
+            : mBuffersData(other.mBuffersData),
+              mCurveBuffersData(other.mCurveBuffersData),
+              mpScene(other.mpScene),
+              mSceneGraph(other.mSceneGraph),
+              mFlags(other.mFlags),
+              mFilename(other.mFilename),
+              mRenderSettings(other.mRenderSettings),
+              mMeshes(other.mMeshes),
+              mMeshGroups(other.mMeshGroups),
+              mProceduralPrimitives(other.mProceduralPrimitives),
+              mProceduralPrimInstanceCount(other.mProceduralPrimInstanceCount),
+              mCustomPrimitiveAABBs(other.mCustomPrimitiveAABBs),
+              mCurves(other.mCurves),
+              mMaterials(other.mMaterials),
+              mVolumes(other.mVolumes),
+              mGrids(other.mGrids),
+              mGridIDs(other.mGridIDs),
+              mCameras(other.mCameras),
+              mpSelectedCamera(other.mpSelectedCamera),
+              mLights(other.mLights),
+              mpEnvMap(other.mpEnvMap),
+              mAnimations(other.mAnimations),
+              mCameraSpeed(other.mCameraSpeed)
+        {
+        }
+
+    public:
         /** Add a curve.
             Throws an exception if something went wrong.
             \param curve The curve to add.

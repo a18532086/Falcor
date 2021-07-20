@@ -65,6 +65,7 @@ namespace Falcor
         /** Render the particle system, sorting if necessary and drawing the particles
         */
         void render(RenderContext* pCtx, const Fbo::SharedPtr& pDst, glm::mat4 view, glm::mat4 proj);
+        void getParticlesVertexInfo(std::vector<AABB>& aabbs);
 
         /** Render UI controls for this particle system.
             \param[in] pGui GUI instance to render UI elements with
