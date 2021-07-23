@@ -239,7 +239,7 @@ namespace Falcor
         pCtx->drawIndirect(mDrawResources.pState.get(), mDrawResources.pVars.get(), 1, mpIndirectArgs.get(), 0, nullptr, 0);
     }
 
-    void ParticleSystem::getParticlesVertexInfo(std::vector<AABB>& aabbs)
+    void ParticleSystem::getParticlesVertexInfo(std::vector<AABB>& aabbs,std::vector<float>& rotate)
     {
 
         auto pCB = static_cast<const VSPerFrame*>(mDrawResources.pVars->getParameterBlock(mBindLocations.drawCB)->getRawData());
@@ -250,15 +250,22 @@ namespace Falcor
 
         aabbs.resize(instanceCount);
 
+        rotate.resize(instanceCount);
+
         auto pMappedAliveList = static_cast<const uint32_t*>(mpAliveList->map(Buffer::MapType::Read));
 
         auto pMappedParticlePool = static_cast<const Particle*>(mpParticlePool->map(Buffer::MapType::Read));
 
         for (uint32_t iID = 0;iID < instanceCount;++iID)
         {
-            auto& pos = pMappedParticlePool[pMappedAliveList[iID]].pos;
-            aabbs[iID].minPoint = pos + float3(-1);
-            aabbs[iID].maxPoint = pos + float3(1);
+            auto& particleData = pMappedParticlePool[pMappedAliveList[iID]];
+
+            float3 offset = particleData.scale * float3(sqrtf(2.0));
+
+            rotate[iID] = particleData.rot;
+            
+            aabbs[iID].minPoint = particleData.pos - offset;
+            aabbs[iID].maxPoint = particleData.pos + offset;
         }
     }
 

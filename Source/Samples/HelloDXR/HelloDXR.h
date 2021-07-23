@@ -85,12 +85,17 @@ private:
 
     bool mRayTrace = true;
     bool mUseDOF = false;
+    bool mbPS = true;
+    bool mbUpdateAABB = false;
     RtProgramVars::SharedPtr mpRtVars;
     //RtSceneRenderer::SharedPtr mpRtRenderer;
     Texture::SharedPtr mpRtOut;
     std::vector<ParticleSystem::SharedPtr> mpParticleSystems;
     std::vector<PixelShaderData> mPsData;
     std::vector<Texture::SharedPtr> mpTextures;
+    Buffer::SharedPtr mpRotateBuffer;
+    Buffer::SharedPtr mpDirViewBuffer;
+    Buffer::SharedPtr mpDBuffer;
 
     uint32_t mSampleIndex = 0xdeadbeef;
 

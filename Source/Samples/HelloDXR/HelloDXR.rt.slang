@@ -30,6 +30,29 @@ import Scene.Shading;
 import Scene.Raytracing;
 import Utils.Helpers;
 
+struct DebugInfo{
+    float3 rayOrig;
+    bool isHit;
+
+    float3 rayDir;
+    float hitT;
+
+    float3 viewDir;
+    float rotate;
+
+    float2 UV;
+    uint gID;
+    float r;
+
+    float3 cameraVD;
+};
+
+StructuredBuffer<float> rotatePool;
+RWStructuredBuffer<float3> directViewDirBuffer : register(u3);
+RWStructuredBuffer<DebugInfo> dBuffer : register(u4);
+
+static const int kSpriteHitKind = 0x01;
+
 cbuffer PerFrameCB
 {
     float4x4 invView;
@@ -50,6 +73,8 @@ struct ShadowRayData
 {
     bool hit;
 };
+
+
 
 [shader("miss")]
 void shadowMiss(inout ShadowRayData hitData)
@@ -82,6 +107,16 @@ bool checkLightHit(uint lightIndex, float3 origin)
     return rayData.hit;
 }
 
+uint getDispatchIndex(){
+    uint3 idx = DispatchRaysIndex();
+    uint3 dim = DispatchRaysDimensions();
+    return idx.x + idx.y * dim.x + idx.z * dim.x * dim.y;
+}
+
+float3 getCameraViewDir(){
+    return normalize(gScene.camera.data.target - gScene.camera.data.posW);
+}
+
 float3 getReflectionColor(float3 worldOrigin, VertexData v, float3 worldRayDir, uint hitDepth)
 {
     float3 reflectColor = float3(0, 0, 0);
@@ -92,6 +127,8 @@ float3 getReflectionColor(float3 worldOrigin, VertexData v, float3 worldRayDir, 
         RayDesc ray;
         ray.Origin = worldOrigin;
         ray.Direction = reflect(worldRayDir, v.normalW);
+        float3 lastViewDir = directViewDirBuffer[getDispatchIndex()];
+        directViewDirBuffer[getDispatchIndex()] = reflect(lastViewDir, v.normalW);
         ray.TMin = 0.001;
         ray.TMax = 100000;
         TraceRay(gRtScene, 0 /*rayFlags*/, 0xFF, 0 /* ray index*/, hitProgramCount, 0, ray, secondaryRay);
@@ -119,15 +156,24 @@ void primaryClosestHit(
     uint materialID = gScene.getMaterialID(hitParams.getGlobalHitID());
     ShadingData sd = prepareShadingData(v, materialID, gScene.materials[materialID], gScene.materialResources[materialID], -rayDirW, 0);
 
+
     // Shoot a reflection ray
-    float3 reflectColor = getReflectionColor(posW, v, rayDirW, hitData.depth.r);
+    float3 reflectColor = float3(0.0);
+    if (HitKind() != kSpriteHitKind){
+        reflectColor = getReflectionColor(posW, v, rayDirW, hitData.depth.r);
+    }
     float3 color = 0;
 
-    for (int i = 0; i < gScene.getLightCount(); i++)
-    {
-        if (checkLightHit(i, posW) == false)
+    if (HitKind() == kSpriteHitKind){
+        color = float3(0,0,1);
+    }
+    else{
+        for (int i = 0; i < gScene.getLightCount(); i++)
         {
-            color += evalMaterial(sd, gScene.getLight(i), 1).color;
+            if (checkLightHit(i, posW) == false)
+            {
+                color += evalMaterial(sd, gScene.getLight(i), 1).color;
+            }
         }
     }
 
@@ -176,14 +222,115 @@ void rayGen(
 
     PrimaryRayData hitData;
     hitData.depth = 0;
+    directViewDirBuffer[getDispatchIndex()] = getCameraViewDir();
     TraceRay(gRtScene, 0 /*rayFlags*/, 0xFF, 0 /* ray index*/, hitProgramCount, 0, ray, hitData);
     gOutput[launchIndex.xy] = hitData.color;
 }
 
+float3x3 rotateMatFromUtoV(float3 u, float3 v)
+{
+    float c = dot(u,v);
+    float3 axis = cross(u,v);
+    float s = length(axis);
+    if (abs(s) < 1e-3){
+        return float3x3(1,0,0,
+                        0,1,0,
+                        0,0,1);
+    }
+    axis = normalize(axis);
+
+    float t = 1 - c;
+    float x = axis.x;
+    float y = axis.y;
+    float z = axis.z;
+
+    return float3x3(
+        t * x * x + c,      t * x * y - s * z,  t * x * z + s * y,
+        t * x * y + s * z,  t * y * y + c,      t * y * z - s * x,
+        t * x * z - s * y,  t * y * z + s * x,  t * z * z + c
+    );
+}
+
+
+struct SpriteIntersectionAttributes
+{
+    float2 UV;
+};
+
 [shader("intersection")]
-void spriteIntersection()
+void spriteIntersection(uniform HitShaderParams hitParams)
 {
     float3 rayOrigW = WorldRayOrigin();
     float3 rayDirW = WorldRayDirection();
     float THit = RayTCurrent();
+    AABB aabbData = gScene.getProceduralPrimitiveAABB(InstanceID(), hitParams.geometryIndex);
+
+
+    // rotate
+    float rot = -rotatePool[hitParams.geometryIndex];
+    float cosTheta = cos(rot);
+    float sinTheta = sin(rot);
+    float2x2 rotToUni = float2x2(cosTheta, sinTheta, -sinTheta, cosTheta);
+
+    float3 center = aabbData.center();
+    float radius = aabbData.extent().x * 0.25 * sqrt(2.0); // * 0.5 / sqrt2
+
+    float3 viewDir = directViewDirBuffer[getDispatchIndex()];
+
+    float3 right = normalize(cross(viewDir,float3(0,1,0)));
+
+    float3 up = cross(viewDir,right);
+
+    float4x4 rotMat = float4x4(float4(right, 0) , float4(up, 0), float4(viewDir, 0), float4(0));
+    float4x4 translateMat = transpose(float4x4(float4(0.0), float4(0.0), float4(0.0), float4(-center, 1)));
+    float4x4 rotLocalMat = float4x4(float4(cosTheta, sinTheta,0,0), float4(-sinTheta, cosTheta, 0, 0), float4(0.0), float4(0.0));
+    float4x4 worldToSpriteLocalMat = mul(rotLocalMat, mul(rotMat, translateMat));
+
+    float4 rotRayDir = mul(worldToSpriteLocalMat,float4(rayDirW,0));
+
+    float4 rotRayOrig = mul(worldToSpriteLocalMat, float4(rayOrigW, 1));
+
+    // DebugInfo
+    bool isHit = false;
+    float hittt = 0;
+    float2 UV;
+    // DebugInfo
+
+    if (abs(rotRayDir.z) > 1e-3){
+        float nowHitT = - rotRayOrig.z / rotRayDir.z;
+        float2 nowHitP = (rotRayOrig + nowHitT * rotRayDir).xy;
+
+        UV = nowHitP / float2(radius);
+
+        if (all(abs(UV) < float2(1.0))){
+            UV = UV * float2(0.5) + float2(0.5);
+            BuiltInTriangleIntersectionAttributes attr = {UV};
+            // DebugInfo
+            isHit = true;
+            hittt = nowHitT;
+            // DebugInfo
+            ReportHit(nowHitT, kSpriteHitKind, attr);
+        }
+    }
+
+    // DebugInfo
+
+    // DebugInfo dinfo = {
+    // rayOrigW,
+    // isHit,
+    // rayDirW, 
+    // hittt,
+    // viewDir,
+    // rot,
+    // UV,
+    // hitParams.geometryIndex,
+    // radius,
+    // getCameraViewDir(),
+    // };
+
+
+    // dBuffer[getDispatchIndex()] = dinfo;
+    // DebugInfo
+
+    
 }

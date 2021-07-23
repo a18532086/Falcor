@@ -42,7 +42,7 @@ static const char* kTexturedPs = "Samples/HelloDXR/ParticleTexture.ps.slang";
 
 enum CustomTypeID
 {
-    eTypeSprite = 1,
+    eTypeSprite = 0,
 };
 
 void HelloDXR::onGuiRender(Gui* pGui)
@@ -66,6 +66,7 @@ void HelloDXR::onGuiRender(Gui* pGui)
 
     if (w.button("Create"))
     {
+        mpRotateBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "rotatePool", mGuiData.mMaxParticles);
         auto pContext = gpDevice->getRenderContext();
         switch ((ExamplePixelShaders)mGuiData.mPixelShaderIndex)
         {
@@ -140,7 +141,8 @@ void HelloDXR::loadScene(const std::string& filename, const Fbo* pTargetFbo)
     rtProgDesc.addShaderLibrary("Samples/HelloDXR/HelloDXR.rt.slang").setRayGen("rayGen");
     rtProgDesc.addHitGroup(0, "primaryClosestHit", "primaryAnyHit").addMiss(0, "primaryMiss");
     rtProgDesc.addHitGroup(1, "", "shadowAnyHit").addMiss(1, "shadowMiss");
-    rtProgDesc.addIntersection(eTypeSprite, "spriteIntersection");
+    rtProgDesc.addAABBHitGroup(0, "primaryClosestHit", "primaryAnyHit");
+    rtProgDesc.addAABBHitGroup(1, "", "").addIntersection(eTypeSprite, "spriteIntersection");
     rtProgDesc.addDefines(mpScene->getSceneDefines());
     rtProgDesc.setMaxTraceRecursionDepth(3); // 1 for calling TraceRay from RayGen, 1 for calling it from the primary-ray ClosestHitShader for reflections, 1 for reflection ray tracing a shadow ray
 
@@ -185,22 +187,50 @@ void HelloDXR::renderRT(RenderContext* pContext, const Fbo* pTargetFbo)
 void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPtr& pTargetFbo)
 {
     PROFILE("renderParticleSystem");
-    auto pSB = mpSceneBuilder->copy();
+    static int fC = 0;
+    static constexpr int kRefreshRate = 0x7fffffff;
+    SceneBuilder::SharedPtr pSB;
+    std::vector<float> rots;
+    if (mbPS)
+    {
+        ++fC;
+    }
+    bool bshouldUpdateAABB = fC % kRefreshRate == 0 || mbUpdateAABB;
+    if (bshouldUpdateAABB)
+    {
+        pSB = mpSceneBuilder->copy();
+        mbUpdateAABB = false;
+    }
     for (auto it = mpParticleSystems.begin(); it != mpParticleSystems.end(); ++it)
     {
-        (*it)->update(pContext, static_cast<float>(gpFramework->getGlobalClock().getDelta()), mpCamera->getViewMatrix());
-        (*it)->render(pContext, pTargetFbo,mpCamera->getViewMatrix(), mpCamera->getProjMatrix());
-        std::vector<AABB> aabbs;
-        (*it)->getParticlesVertexInfo(aabbs);
-        for (const auto& aabb:aabbs)
+        if (mbPS)
         {
-            pSB->addCustomPrimitive(eTypeSprite, aabb);
+            (*it)->update(pContext, static_cast<float>(gpFramework->getGlobalClock().getDelta()), mpCamera->getViewMatrix());
+        }
+
+        (*it)->render(pContext, pTargetFbo,mpCamera->getViewMatrix(), mpCamera->getProjMatrix());
+        if (bshouldUpdateAABB)
+        {
+            std::vector<AABB> aabbs;
+            (*it)->getParticlesVertexInfo(aabbs,rots);
+            for (const auto& aabb : aabbs)
+            {
+                pSB->addCustomPrimitive(eTypeSprite, aabb);
+            }
+            mpRotateBuffer->setBlob(rots.data(), 0, rots.size() * sizeof(float));
         }
     }
-    static int fC = 0;
-    if (++fC % 60 == 0)
+    
+    if (bshouldUpdateAABB)
     {
         mpScene = pSB->getScene();
+        mpRtVars = RtProgramVars::create(mpRaytraceProgram, mpScene);
+        std::vector<uint8_t> vc(mpDBuffer->getSize(),0);
+        mpDBuffer->setBlob(vc.data(), 0, vc.size());
+        mpRtVars->setBuffer("rotatePool", mpRotateBuffer);
+        mpRtVars->setBuffer("directViewDirBuffer", mpDirViewBuffer);
+        mpRtVars->setBuffer("dBuffer", mpDBuffer);
+        mpRaytraceProgram->setScene(mpScene);
     }
 
 }
@@ -227,6 +257,16 @@ bool HelloDXR::onKeyEvent(const KeyboardEvent& keyEvent)
         mRayTrace = !mRayTrace;
         return true;
     }
+    if (keyEvent.key == KeyboardEvent::Key::P && keyEvent.type == KeyboardEvent::Type::KeyPressed)
+    {
+        mbPS = !mbPS;
+        return true;
+    }
+    if (keyEvent.key == KeyboardEvent::Key::O && keyEvent.type == KeyboardEvent::Type::KeyPressed)
+    {
+        mbUpdateAABB = true;
+        return true;
+    }
     if (mpScene && mpScene->onKeyEvent(keyEvent)) return true;
     return false;
 }
@@ -249,6 +289,12 @@ void HelloDXR::onResizeSwapChain(uint32_t width, uint32_t height)
     }
 
     mpRtOut = Texture::create2D(width, height, ResourceFormat::RGBA16Float, 1, 1, nullptr, Resource::BindFlags::UnorderedAccess | Resource::BindFlags::ShaderResource);
+    if (mpRaytraceProgram)
+    {
+        mpDirViewBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "directViewDirBuffer", height * width, ResourceBindFlags::UnorderedAccess);
+        mpDBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "dBuffer", height * width, ResourceBindFlags::UnorderedAccess);
+    }
+    
 }
 
 int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nShowCmd)
