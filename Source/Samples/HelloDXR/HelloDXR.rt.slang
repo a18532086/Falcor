@@ -47,9 +47,22 @@ struct DebugInfo{
     float3 cameraVD;
 };
 
+struct Particle{
+    float3 center;
+    float scale;
+    float rotate;
+}
+
+struct Range{
+    uint offset;
+    uint size;
+}
+
 StructuredBuffer<float> rotatePool;
 RWStructuredBuffer<float3> directViewDirBuffer : register(u3);
 RWStructuredBuffer<DebugInfo> dBuffer : register(u4);
+StructuredBuffer<Particle> particlePool;
+StructuredBuffer<Range> particleSystemRanges;
 
 static const int kSpriteHitKind = 0x01;
 
@@ -60,6 +73,7 @@ cbuffer PerFrameCB
     float tanHalfFovY;
     uint sampleIndex;
     bool useDOF;
+    //uint numParticleSystemsCount;
 };
 
 struct PrimaryRayData
@@ -77,15 +91,22 @@ struct ShadowRayData
 
 
 [shader("miss")]
-void shadowMiss(inout ShadowRayData hitData)
+void shadowMiss(uniform HitShaderParams hitParams, inout ShadowRayData hitData)
 {
     hitData.hit = false;
 }
 
 [shader("anyhit")]
-void shadowAnyHit(inout ShadowRayData hitData, in BuiltInTriangleIntersectionAttributes attribs)
+void shadowAnyHit(uniform HitShaderParams hitParams, inout ShadowRayData hitData, in BuiltInTriangleIntersectionAttributes attribs)
 {
-    hitData.hit = true;
+    if (kSpriteHitKind == HitKind()){
+        hitData.hit = false;
+        IgnoreHit();
+    }
+    else{
+        hitData.hit = true;
+    }
+
 }
 
 [shader("miss")]
@@ -227,35 +248,23 @@ void rayGen(
     gOutput[launchIndex.xy] = hitData.color;
 }
 
-float3x3 rotateMatFromUtoV(float3 u, float3 v)
-{
-    float c = dot(u,v);
-    float3 axis = cross(u,v);
-    float s = length(axis);
-    if (abs(s) < 1e-3){
-        return float3x3(1,0,0,
-                        0,1,0,
-                        0,0,1);
-    }
-    axis = normalize(axis);
-
-    float t = 1 - c;
-    float x = axis.x;
-    float y = axis.y;
-    float z = axis.z;
-
-    return float3x3(
-        t * x * x + c,      t * x * y - s * z,  t * x * z + s * y,
-        t * x * y + s * z,  t * y * y + c,      t * y * z - s * x,
-        t * x * z - s * y,  t * y * z + s * x,  t * z * z + c
-    );
-}
-
 
 struct SpriteIntersectionAttributes
 {
     float2 UV;
 };
+
+float4x4 getTranslateMat(float3 offset){
+    return float4x4(float4(1, 0, 0, offset.x), float4(0, 1, 0, offset.y), float4(0, 0, 1, offset.z), float4(0, 0, 0, 1));
+}
+
+float4x4 getNewBasisMat(float3 x,float3 y, float3 z){
+    return float4x4(float4(x, 0) , float4(y, 0), float4(z, 0), float4(0, 0, 0, 1));
+}
+
+float3 getOrthoVector(float3 vec){
+    return cross(vec,float3(0, 1, 0));
+}
 
 [shader("intersection")]
 void spriteIntersection(uniform HitShaderParams hitParams)
@@ -270,21 +279,20 @@ void spriteIntersection(uniform HitShaderParams hitParams)
     float rot = -rotatePool[hitParams.geometryIndex];
     float cosTheta = cos(rot);
     float sinTheta = sin(rot);
-    float2x2 rotToUni = float2x2(cosTheta, sinTheta, -sinTheta, cosTheta);
 
     float3 center = aabbData.center();
     float radius = aabbData.extent().x * 0.25 * sqrt(2.0); // * 0.5 / sqrt2
 
     float3 viewDir = directViewDirBuffer[getDispatchIndex()];
 
-    float3 right = normalize(cross(viewDir,float3(0,1,0)));
+    float3 right = normalize(getOrthoVector(viewDir));
 
     float3 up = cross(viewDir,right);
 
-    float4x4 rotMat = float4x4(float4(right, 0) , float4(up, 0), float4(viewDir, 0), float4(0));
-    float4x4 translateMat = transpose(float4x4(float4(0.0), float4(0.0), float4(0.0), float4(-center, 1)));
-    float4x4 rotLocalMat = float4x4(float4(cosTheta, sinTheta,0,0), float4(-sinTheta, cosTheta, 0, 0), float4(0.0), float4(0.0));
-    float4x4 worldToSpriteLocalMat = mul(rotLocalMat, mul(rotMat, translateMat));
+    float4x4 rotWorld2View = getNewBasisMat(right,up,viewDir);
+    float4x4 translateMat = getTranslateMat(-center);
+    float4x4 rotAroundZ = float4x4(float4(cosTheta, sinTheta,0,0), float4(-sinTheta, cosTheta, 0, 0), float4(0, 0, 1, 0), float4(0, 0, 0, 1));
+    float4x4 worldToSpriteLocalMat = mul(rotAroundZ, mul(rotWorld2View, translateMat));
 
     float4 rotRayDir = mul(worldToSpriteLocalMat,float4(rayDirW,0));
 
@@ -293,7 +301,7 @@ void spriteIntersection(uniform HitShaderParams hitParams)
     // DebugInfo
     bool isHit = false;
     float hittt = 0;
-    float2 UV;
+    float2 UV = float2(0.0);
     // DebugInfo
 
     if (abs(rotRayDir.z) > 1e-3){
@@ -332,5 +340,72 @@ void spriteIntersection(uniform HitShaderParams hitParams)
     // dBuffer[getDispatchIndex()] = dinfo;
     // DebugInfo
 
+    
+}
+
+[shader("intersection")]
+void spriteEmitterAABBIntersection(uniform HitShaderParams hitParams)
+{
+    float3 rayOrigW = WorldRayOrigin();
+    float3 rayDirW = WorldRayDirection();
+    float THit = RayTCurrent();
+
+
+    // rotate
+    Range range = particleSystemRanges[hitParams.geometryIndex];
+
+    uint IdxEnd = range.size + range.offset;
+
+    float3 viewDir = directViewDirBuffer[getDispatchIndex()];
+
+    float3 right = normalize(getOrthoVector(viewDir));
+
+    float3 up = cross(viewDir,right);
+
+    float4x4 rotWorld2View = getNewBasisMat(right,up,viewDir);
+
+    bool isHit = false;
+
+    float2 hitUV = float2(0.0);
+
+    for (uint particle_ID = range.offset; particle_ID < IdxEnd; ++particle_ID){
+        Particle pd = particlePool[particle_ID];
+        float rot = -pd.rotate;
+
+        float cosTheta = cos(rot);
+        float sinTheta = sin(rot);
+
+        float3 center = pd.center;
+        float radius = pd.scale;
+
+        float4x4 translateMat = getTranslateMat(-center);
+        float4x4 rotAroundZ = float4x4(float4(cosTheta, sinTheta,0,0), float4(-sinTheta, cosTheta, 0, 0), float4(0, 0, 1, 0), float4(0, 0, 0, 1));
+        float4x4 worldToSpriteLocalMat = mul(rotAroundZ, mul(rotWorld2View, translateMat));
+
+        float4 rotRayDir = mul(worldToSpriteLocalMat,float4(rayDirW, 0));
+
+        float4 rotRayOrig = mul(worldToSpriteLocalMat, float4(rayOrigW, 1));
+
+        if (abs(rotRayDir.z) > 1e-3){
+            float nowHitT = - rotRayOrig.z / rotRayDir.z;
+            float2 nowHitP = (rotRayOrig + nowHitT * rotRayDir).xy;
+
+            float2 UV = nowHitP / float2(radius);
+
+            if (nowHitT >= RayTMin() && nowHitT < THit && all(abs(UV) < float2(1.0))){
+                UV = UV * float2(0.5) + float2(0.5);
+                BuiltInTriangleIntersectionAttributes attr = {UV};
+                isHit = true;
+                hitUV = UV;
+                THit = nowHitT;
+            }
+        }
+
+    }
+    BuiltInTriangleIntersectionAttributes attr = {hitUV};
+
+    if (isHit){
+        ReportHit(THit, kSpriteHitKind, attr);
+    }
     
 }

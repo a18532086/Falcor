@@ -87,6 +87,7 @@ private:
     bool mUseDOF = false;
     bool mbPS = true;
     bool mbUpdateAABB = false;
+    bool mbShowRasterPS = false;
     RtProgramVars::SharedPtr mpRtVars;
     //RtSceneRenderer::SharedPtr mpRtRenderer;
     Texture::SharedPtr mpRtOut;
@@ -95,6 +96,7 @@ private:
     std::vector<Texture::SharedPtr> mpTextures;
     Buffer::SharedPtr mpRotateBuffer;
     Buffer::SharedPtr mpDirViewBuffer;
+    Buffer::SharedPtr mpRangeBuffer;
     Buffer::SharedPtr mpDBuffer;
 
     uint32_t mSampleIndex = 0xdeadbeef;

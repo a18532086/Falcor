@@ -11,21 +11,17 @@
  #    documentation and/or other materials provided with the distribution.
  #  * Neither the name of NVIDIA CORPORATION nor the names of its
  #    contributors may be used to endorse or promote products derived
- #    from this software without specific prior written permission.
- #
- # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS "AS IS" AND ANY
- # EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- # IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- # PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+S # PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
  # CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  # EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  # PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
  # PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
  # OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.d
  **************************************************************************/
 #include "HelloDXR.h"
+#define USE_EMITTER_AABB
 
 static const float4 kClearColor(0.38f, 0.52f, 0.10f, 1);
 static const std::string kDefaultScene = "Arcade/Arcade_Wall.pyscene";
@@ -43,6 +39,21 @@ static const char* kTexturedPs = "Samples/HelloDXR/ParticleTexture.ps.slang";
 enum CustomTypeID
 {
     eTypeSprite = 0,
+};
+
+namespace
+{
+    struct PS_Data
+    {
+        float3 center;
+        float scale;
+        float rotate;
+    };
+    struct Range
+    {
+        uint32_t offset;
+        uint32_t size;
+    };
 };
 
 void HelloDXR::onGuiRender(Gui* pGui)
@@ -66,7 +77,23 @@ void HelloDXR::onGuiRender(Gui* pGui)
 
     if (w.button("Create"))
     {
-        mpRotateBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "rotatePool", mGuiData.mMaxParticles);
+
+        uint32_t particleMaxSize = mGuiData.mMaxParticles;
+        for (auto pPS:mpParticleSystems)
+        {
+
+            particleMaxSize += pPS->getMaxParticles();
+        }
+#if defined(USE_EMITTER_AABB)
+        mpRotateBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "particlePool", particleMaxSize);
+#else
+        mpRotateBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "rotatePool", particleMaxSize);
+#endif
+
+#if defined(USE_EMITTER_AABB)
+        mpRangeBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "particleSystemRanges", static_cast<uint32_t>(mpParticleSystems.size()) + 1);
+#endif
+
         auto pContext = gpDevice->getRenderContext();
         switch ((ExamplePixelShaders)mGuiData.mPixelShaderIndex)
         {
@@ -142,7 +169,12 @@ void HelloDXR::loadScene(const std::string& filename, const Fbo* pTargetFbo)
     rtProgDesc.addHitGroup(0, "primaryClosestHit", "primaryAnyHit").addMiss(0, "primaryMiss");
     rtProgDesc.addHitGroup(1, "", "shadowAnyHit").addMiss(1, "shadowMiss");
     rtProgDesc.addAABBHitGroup(0, "primaryClosestHit", "primaryAnyHit");
-    rtProgDesc.addAABBHitGroup(1, "", "").addIntersection(eTypeSprite, "spriteIntersection");
+    rtProgDesc.addAABBHitGroup(1, "", "shadowAnyHit");
+#if defined(USE_EMITTER_AABB)
+    rtProgDesc.addIntersection(eTypeSprite, "spriteEmitterAABBIntersection");
+#else
+    rtProgDesc.addIntersection(eTypeSprite, "spriteIntersection");
+#endif
     rtProgDesc.addDefines(mpScene->getSceneDefines());
     rtProgDesc.setMaxTraceRecursionDepth(3); // 1 for calling TraceRay from RayGen, 1 for calling it from the primary-ray ClosestHitShader for reflections, 1 for reflection ray tracing a shadow ray
 
@@ -187,47 +219,86 @@ void HelloDXR::renderRT(RenderContext* pContext, const Fbo* pTargetFbo)
 void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPtr& pTargetFbo)
 {
     PROFILE("renderParticleSystem");
-    static int fC = 0;
-    static constexpr int kRefreshRate = 0x7fffffff;
+    static double fC = 0.0;
+    static constexpr double kRefreshRate = 0.5;
     SceneBuilder::SharedPtr pSB;
     std::vector<float> rots;
     if (mbPS)
     {
-        ++fC;
+        fC += gpFramework->getGlobalClock().getDelta();
     }
-    bool bshouldUpdateAABB = fC % kRefreshRate == 0 || mbUpdateAABB;
+    const bool bshouldUpdateAABB = fC >= kRefreshRate && !(fC = 0.0) || mbUpdateAABB;
     if (bshouldUpdateAABB)
     {
         pSB = mpSceneBuilder->copy();
         mbUpdateAABB = false;
     }
+    size_t bufOffset = 0;
+    uint32_t rangeOffset = 0;
+    std::vector<Range> ranges;
     for (auto it = mpParticleSystems.begin(); it != mpParticleSystems.end(); ++it)
     {
         if (mbPS)
         {
             (*it)->update(pContext, static_cast<float>(gpFramework->getGlobalClock().getDelta()), mpCamera->getViewMatrix());
         }
+        if (mbShowRasterPS)
+        {
+            (*it)->render(pContext, pTargetFbo,mpCamera->getViewMatrix(), mpCamera->getProjMatrix());
+        }
 
-        (*it)->render(pContext, pTargetFbo,mpCamera->getViewMatrix(), mpCamera->getProjMatrix());
         if (bshouldUpdateAABB)
         {
-            std::vector<AABB> aabbs;
-            (*it)->getParticlesVertexInfo(aabbs,rots);
-            for (const auto& aabb : aabbs)
+            std::vector<Particle> particleInfos;
+            (*it)->getParticlesVertexInfo(particleInfos);
+#if defined(USE_EMITTER_AABB)
+            std::vector<PS_Data> pds;
+            AABB maxAABB(float3(FLT_MAX), float3(FLT_MIN));
+            for (const auto& particle_info : particleInfos)
             {
+                float3 offset = float3(particle_info.scale, particle_info.scale, particle_info.scale);
+                AABB aabb(particle_info.pos - offset, particle_info.pos + offset);
+                maxAABB.minPoint = min(aabb.minPoint, maxAABB.minPoint);
+                maxAABB.maxPoint = max(aabb.maxPoint, maxAABB.maxPoint);
+                pds.push_back({ particle_info.pos,particle_info.scale,particle_info.rot });
+            }
+            pSB->addCustomPrimitive(eTypeSprite, maxAABB);
+            mpRotateBuffer->setBlob(pds.data(), bufOffset, pds.size() * sizeof(PS_Data));
+            bufOffset += pds.size() * sizeof(PS_Data);
+            ranges.push_back({ rangeOffset,static_cast<uint32_t>(particleInfos.size()) });
+            rangeOffset += static_cast<uint32_t>(particleInfos.size());
+#else
+            for (const auto& particle_info : particleInfos)
+            {
+                float3 offset = float3(particle_info.scale, particle_info.scale, particle_info.scale);
+                AABB aabb(particle_info.pos - offset, particle_info.pos + offset);
                 pSB->addCustomPrimitive(eTypeSprite, aabb);
             }
-            mpRotateBuffer->setBlob(rots.data(), 0, rots.size() * sizeof(float));
+            rots.resize(particleInfos.size());
+            std::transform(particleInfos.cbegin(), particleInfos.cend(), rots.begin(), [](const Particle& p) {return p.rot;});
+            mpRotateBuffer->setBlob(rots.data(), bufOffset, rots.size() * sizeof(float));
+            bufOffset += rots.size() * sizeof(float);
+#endif
         }
+        
     }
-    
+
     if (bshouldUpdateAABB)
     {
         mpScene = pSB->getScene();
         mpRtVars = RtProgramVars::create(mpRaytraceProgram, mpScene);
-        std::vector<uint8_t> vc(mpDBuffer->getSize(),0);
+        std::vector<uint8_t> vc(mpDBuffer->getSize(), 0);
         mpDBuffer->setBlob(vc.data(), 0, vc.size());
+#if defined(USE_EMITTER_AABB)
+        if (!ranges.empty())
+        {
+            mpRangeBuffer->setBlob(ranges.data(), 0, sizeof(Range) * ranges.size());
+        }
+        mpRtVars->setBuffer("particleSystemRanges", mpRangeBuffer);
+        mpRtVars->setBuffer("particlePool", mpRotateBuffer);
+#else
         mpRtVars->setBuffer("rotatePool", mpRotateBuffer);
+#endif
         mpRtVars->setBuffer("directViewDirBuffer", mpDirViewBuffer);
         mpRtVars->setBuffer("dBuffer", mpDBuffer);
         mpRaytraceProgram->setScene(mpScene);
@@ -267,6 +338,11 @@ bool HelloDXR::onKeyEvent(const KeyboardEvent& keyEvent)
         mbUpdateAABB = true;
         return true;
     }
+    if (keyEvent.key == KeyboardEvent::Key::I && keyEvent.type == KeyboardEvent::Type::KeyPressed)
+    {
+        mbShowRasterPS = !mbShowRasterPS;
+        return true;
+    }
     if (mpScene && mpScene->onKeyEvent(keyEvent)) return true;
     return false;
 }
@@ -294,7 +370,7 @@ void HelloDXR::onResizeSwapChain(uint32_t width, uint32_t height)
         mpDirViewBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "directViewDirBuffer", height * width, ResourceBindFlags::UnorderedAccess);
         mpDBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "dBuffer", height * width, ResourceBindFlags::UnorderedAccess);
     }
-    
+
 }
 
 int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nShowCmd)
