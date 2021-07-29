@@ -21,10 +21,10 @@ S # PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.d
  **************************************************************************/
 #include "HelloDXR.h"
-#define USE_EMITTER_AABB
+//#define USE_EMITTER_AABB
 
 static const float4 kClearColor(0.38f, 0.52f, 0.10f, 1);
-static const std::string kDefaultScene = "Arcade/Arcade_Wall.pyscene";
+static const std::string kDefaultScene = "Arcade/Arcade.pyscene";
 static const Gui::DropdownList kPixelShaders
 {
     {0, "ConstColor"},
@@ -256,7 +256,7 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
             AABB maxAABB(float3(FLT_MAX), float3(FLT_MIN));
             for (const auto& particle_info : particleInfos)
             {
-                float3 offset = float3(particle_info.scale, particle_info.scale, particle_info.scale);
+                float3 offset = float3(particle_info.scale * sqrtf(2.0f));
                 AABB aabb(particle_info.pos - offset, particle_info.pos + offset);
                 maxAABB.minPoint = min(aabb.minPoint, maxAABB.minPoint);
                 maxAABB.maxPoint = max(aabb.maxPoint, maxAABB.maxPoint);
@@ -270,7 +270,7 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
 #else
             for (const auto& particle_info : particleInfos)
             {
-                float3 offset = float3(particle_info.scale, particle_info.scale, particle_info.scale);
+                float3 offset = float3(particle_info.scale * sqrtf(2.0f));
                 AABB aabb(particle_info.pos - offset, particle_info.pos + offset);
                 pSB->addCustomPrimitive(eTypeSprite, aabb);
             }
