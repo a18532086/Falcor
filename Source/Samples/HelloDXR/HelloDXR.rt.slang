@@ -29,6 +29,7 @@ import Scene.Lights.Lights;
 import Scene.Shading;
 import Scene.Raytracing;
 import Utils.Helpers;
+import Scene.HitInfo;
 
 struct DebugInfo{
     float3 rayOrig;
@@ -88,6 +89,15 @@ struct ShadowRayData
     bool hit;
 };
 
+/** Payload for scatter ray.
+*/
+struct ScatterRayData
+{
+    PackedHitInfo packedHitInfo;        ///< Packed HitInfo data, or kInvalidIndex in the first component if ray missed.
+    uint hitKind;
+    float hitT;
+};
+
 
 
 [shader("miss")]
@@ -114,6 +124,13 @@ void primaryMiss(inout PrimaryRayData hitData)
 {
     hitData.color = float4(0.38f, 0.52f, 0.10f, 1);
     hitData.hitT = -1;
+}
+
+[shader("miss")]
+void primaryMissIR(inout ScatterRayData rayData : SV_RayPayload)
+{
+    rayData.packedHitInfo.x = HitInfo::kInvalidIndex;
+    rayData.hitT = -1;
 }
 
 bool checkLightHit(uint lightIndex, float3 origin)
@@ -208,10 +225,39 @@ void primaryClosestHit(
     hitData.color.a = 1;
 }
 
+[shader("closesthit")]
+void primaryClosestHitIR(
+    uniform HitShaderParams hitParams,
+    inout ScatterRayData rayData : SV_RayPayload, in BuiltInTriangleIntersectionAttributes attribs)
+{
+    HitInfo hit;
+    hit.type = InstanceType::TriangleMesh;
+    hit.instanceID = hitParams.getGlobalHitID();
+    hit.primitiveIndex = PrimitiveIndex();
+    hit.barycentrics = attribs.barycentrics;
+    rayData.packedHitInfo = hit.encode();
+    rayData.hitKind = HitKind();
+    rayData.hitT = RayTCurrent();
+}
 [shader("anyhit")]
 void primaryAnyHit(
     uniform HitShaderParams                 hitParams,
     inout PrimaryRayData                    rayData,
+    BuiltInTriangleIntersectionAttributes   attribs)
+{
+    // Alpha test for non-opaque geometry.
+    VertexData v = getVertexData(hitParams, PrimitiveIndex(), attribs);
+    uint materialID = gScene.getMaterialID(hitParams.getGlobalHitID());
+    if (alphaTest(v, gScene.materials[materialID], gScene.materialResources[materialID], 0.f))
+    {
+        IgnoreHit();
+    }
+}
+
+[shader("anyhit")]
+void primaryAnyHitIR(
+    uniform HitShaderParams                 hitParams,
+    inout ScatterRayData rayData : SV_RayPayload,
     BuiltInTriangleIntersectionAttributes   attribs)
 {
     // Alpha test for non-opaque geometry.
@@ -246,6 +292,101 @@ void rayGen(
     directViewDirBuffer[getDispatchIndex()] = getCameraViewDir();
     TraceRay(gRtScene, 0 /*rayFlags*/, 0xFF, 0 /* ray index*/, hitProgramCount, 0, ray, hitData);
     gOutput[launchIndex.xy] = hitData.color;
+}
+
+[shader("raygeneration")]
+void rayGenIR(
+    uniform RWTexture2D<float4> gOutput)
+{
+    uint3 launchIndex = DispatchRaysIndex();
+    uint randSeed = rand_init(launchIndex.x + launchIndex.y * viewportDims.x, sampleIndex, 16);
+
+    RayDesc ray;
+    if (!useDOF)
+    {
+        ray = gScene.camera.computeRayPinhole(launchIndex.xy, viewportDims).toRayDesc();
+    }
+    else
+    {
+        float2 u = float2(rand_next(randSeed), rand_next(randSeed));
+        ray = gScene.camera.computeRayThinlens(launchIndex.xy, viewportDims, u).toRayDesc();
+    }
+
+    ScatterRayData rayData;
+    directViewDirBuffer[getDispatchIndex()] = getCameraViewDir();
+    const uint maxDepth = 2;
+    float4 accColor = float4(0.0,0.0,0.0,1.0);
+    float3 aSpecular = float3(1.0);
+
+    for (uint depth = 0; depth < maxDepth; ++depth){
+        rayData.packedHitInfo = { HitInfo::kInvalidIndex };
+        TraceRay(gRtScene, 0 /*rayFlags*/, 0xFF, 0 /* ray index*/, hitProgramCount, 0, ray, rayData);
+        if (rayData.packedHitInfo.x != HitInfo::kInvalidIndex){
+            HitInfo tmpHit;
+            bool isEndRef = false;
+            tmpHit.decode(rayData.packedHitInfo);
+            VertexData v = gScene.getVertexData(tmpHit);
+            //
+            uint materialID = gScene.getMaterialID(tmpHit.instanceID);
+            ShadingData sd = prepareShadingData(v, materialID, gScene.materials[materialID], gScene.materialResources[materialID], -ray.Direction, 0);
+
+
+            // Shoot a reflection ray
+            // float3 reflectColor = float3(0.0);
+            // if (rayData.hitKind != kSpriteHitKind){
+            //     reflectColor = getReflectionColor(posW, v, rayDirW, hitData.depth.r);
+            // }
+            float3 color = 0;
+
+            float3 posW = ray.Origin + ray.Direction * rayData.hitT;
+
+            if (rayData.hitKind == kSpriteHitKind){
+                color = float3(0,0,1);
+                isEndRef = true;
+            }
+            else{
+                for (int i = 0; i < gScene.getLightCount(); i++)
+                {
+                    if (checkLightHit(i, posW) == false)
+                    {
+                        color += evalMaterial(sd, gScene.getLight(i), 1).color;
+                    }
+                }
+            }
+
+            color += sd.emissive;
+            accColor.rgb += aSpecular * color;
+
+            if (isEndRef){
+                break;
+            }
+
+            // A very non-PBR inaccurate way to do reflections
+            float alpha = min(0.5, max(1e-8, sd.ggxAlpha));
+            //accColor.rgb += sd.specular * reflectColor * (alpha * alpha);
+
+            if (depth > 0){
+                aSpecular = rayData.hitT == -1 ? 0 : aSpecular;
+                float falloff = max(1, (rayData.hitT * rayData.hitT));
+                aSpecular *= 20 / falloff;
+            }
+            aSpecular *= sd.specular * (alpha * alpha);
+
+            RayDesc tmpRay;
+            tmpRay.Origin = posW;
+            tmpRay.Direction = reflect(ray.Direction, v.normalW);
+            float3 lastViewDir = directViewDirBuffer[getDispatchIndex()];
+            directViewDirBuffer[getDispatchIndex()] = reflect(lastViewDir, v.normalW);
+            tmpRay.TMin = 0.001;
+            tmpRay.TMax = 100000;
+            ray = tmpRay;
+        }
+        else{
+            accColor.rgb += aSpecular * float3(0.38f, 0.52f, 0.10f);
+        }
+    }
+
+    gOutput[launchIndex.xy] = accColor;
 }
 
 

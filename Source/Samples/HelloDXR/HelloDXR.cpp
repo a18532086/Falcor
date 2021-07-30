@@ -21,10 +21,10 @@ S # PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.d
  **************************************************************************/
 #include "HelloDXR.h"
-//#define USE_EMITTER_AABB
+#define USE_EMITTER_AABB
 
 static const float4 kClearColor(0.38f, 0.52f, 0.10f, 1);
-static const std::string kDefaultScene = "Arcade/Arcade.pyscene";
+static const std::string kDefaultScene = "Arcade/Arcade_Wall.pyscene";
 static const Gui::DropdownList kPixelShaders
 {
     {0, "ConstColor"},
@@ -165,10 +165,10 @@ void HelloDXR::loadScene(const std::string& filename, const Fbo* pTargetFbo)
     mpRasterPass = RasterScenePass::create(mpScene, "Samples/HelloDXR/HelloDXR.ps.slang", "", "main");
 
     RtProgram::Desc rtProgDesc;
-    rtProgDesc.addShaderLibrary("Samples/HelloDXR/HelloDXR.rt.slang").setRayGen("rayGen");
-    rtProgDesc.addHitGroup(0, "primaryClosestHit", "primaryAnyHit").addMiss(0, "primaryMiss");
+    rtProgDesc.addShaderLibrary("Samples/HelloDXR/HelloDXR.rt.slang").setRayGen("rayGenIR");
+    rtProgDesc.addHitGroup(0, "primaryClosestHitIR", "primaryAnyHitIR").addMiss(0, "primaryMissIR");
     rtProgDesc.addHitGroup(1, "", "shadowAnyHit").addMiss(1, "shadowMiss");
-    rtProgDesc.addAABBHitGroup(0, "primaryClosestHit", "primaryAnyHit");
+    rtProgDesc.addAABBHitGroup(0, "primaryClosestHitIR", "primaryAnyHitIR");
     rtProgDesc.addAABBHitGroup(1, "", "shadowAnyHit");
 #if defined(USE_EMITTER_AABB)
     rtProgDesc.addIntersection(eTypeSprite, "spriteEmitterAABBIntersection");
