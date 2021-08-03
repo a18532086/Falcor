@@ -31,21 +31,17 @@ import Scene.Raytracing;
 import Utils.Helpers;
 import Scene.HitInfo;
 
+#ifndef MAX_AABB_CNT_PRERAY
+#define MAX_AABB_CNT_PRERAY 10
+#endif
+
+#ifndef MAX_OIT_CNT_PRERAY
+#define MAX_OIT_CNT_PRERAY 10
+#endif
+
 struct DebugInfo{
-    float3 rayOrig;
-    bool isHit;
-
-    float3 rayDir;
-    float hitT;
-
-    float3 viewDir;
-    float rotate;
-
-    float2 UV;
-    uint gID;
-    float r;
-
-    float3 cameraVD;
+    uint begin;
+    uint size;
 };
 
 struct Particle{
@@ -59,8 +55,13 @@ struct Range{
     uint size;
 }
 
+struct AHS_RGS_Payload_t{
+    uint cnt;
+    uint idx[MAX_AABB_CNT_PRERAY];
+}
+
 StructuredBuffer<float> rotatePool;
-RWStructuredBuffer<float3> directViewDirBuffer : register(u3);
+RWStructuredBuffer<AHS_RGS_Payload_t> directViewDirBuffer : register(u3);
 RWStructuredBuffer<DebugInfo> dBuffer : register(u4);
 StructuredBuffer<Particle> particlePool;
 StructuredBuffer<Range> particleSystemRanges;
@@ -91,11 +92,14 @@ struct ShadowRayData
 
 /** Payload for scatter ray.
 */
+
 struct ScatterRayData
 {
     PackedHitInfo packedHitInfo;        ///< Packed HitInfo data, or kInvalidIndex in the first component if ray missed.
     uint hitKind;
     float hitT;
+    uint aabbHitCnt;
+    uint aabbIdx[MAX_AABB_CNT_PRERAY];
 };
 
 
@@ -165,8 +169,8 @@ float3 getReflectionColor(float3 worldOrigin, VertexData v, float3 worldRayDir, 
         RayDesc ray;
         ray.Origin = worldOrigin;
         ray.Direction = reflect(worldRayDir, v.normalW);
-        float3 lastViewDir = directViewDirBuffer[getDispatchIndex()];
-        directViewDirBuffer[getDispatchIndex()] = reflect(lastViewDir, v.normalW);
+        float3 lastViewDir = float3(0.0);//directViewDirBuffer[getDispatchIndex()];
+        //directViewDirBuffer[getDispatchIndex()] = reflect(lastViewDir, v.normalW);
         ray.TMin = 0.001;
         ray.TMax = 100000;
         TraceRay(gRtScene, 0 /*rayFlags*/, 0xFF, 0 /* ray index*/, hitProgramCount, 0, ray, secondaryRay);
@@ -260,13 +264,23 @@ void primaryAnyHitIR(
     inout ScatterRayData rayData : SV_RayPayload,
     BuiltInTriangleIntersectionAttributes   attribs)
 {
-    // Alpha test for non-opaque geometry.
-    VertexData v = getVertexData(hitParams, PrimitiveIndex(), attribs);
-    uint materialID = gScene.getMaterialID(hitParams.getGlobalHitID());
-    if (alphaTest(v, gScene.materials[materialID], gScene.materialResources[materialID], 0.f))
-    {
+    if (HitKind() == kSpriteHitKind){
+        if (directViewDirBuffer[getDispatchIndex()].cnt < MAX_AABB_CNT_PRERAY){
+            uint idx = directViewDirBuffer[getDispatchIndex()].cnt++;
+            directViewDirBuffer[getDispatchIndex()].idx[idx] = asuint(attribs.barycentrics.x);
+        }
         IgnoreHit();
     }
+    else{
+        // Alpha test for non-opaque geometry.
+        VertexData v = getVertexData(hitParams, PrimitiveIndex(), attribs);
+        uint materialID = gScene.getMaterialID(hitParams.getGlobalHitID());
+        if (alphaTest(v, gScene.materials[materialID], gScene.materialResources[materialID], 0.f))
+        {
+            IgnoreHit();
+        }
+    }
+
 }
 
 [shader("raygeneration")]
@@ -289,9 +303,131 @@ void rayGen(
 
     PrimaryRayData hitData;
     hitData.depth = 0;
-    directViewDirBuffer[getDispatchIndex()] = getCameraViewDir();
+    //directViewDirBuffer[getDispatchIndex()] = getCameraViewDir();
     TraceRay(gRtScene, 0 /*rayFlags*/, 0xFF, 0 /* ray index*/, hitProgramCount, 0, ray, hitData);
     gOutput[launchIndex.xy] = hitData.color;
+}
+
+struct HitPoint{
+    float4 color;
+    float hitT;
+}
+
+void dealWithSpriteAndBlend(float3 vDir, RayDesc ray, ScatterRayData rayData, inout float3 color){
+
+    HitPoint arrayHitT[MAX_OIT_CNT_PRERAY];
+
+    for (uint i = 0; i < MAX_OIT_CNT_PRERAY; ++i){
+        arrayHitT[i].hitT = 0;
+    }
+
+    float tMax = rayData.packedHitInfo.x == HitInfo::kInvalidIndex ?  100000 : rayData.hitT;
+
+    float3 viewDir = vDir;
+
+    float3 right = normalize(getOrthoVector(viewDir));
+
+    float3 up = cross(viewDir,right);
+
+    float4x4 rotWorld2View = getNewBasisMat(right,up,viewDir);
+
+    uint cnt = directViewDirBuffer[getDispatchIndex()].cnt;
+
+    for (uint psIdx = 0; psIdx < cnt; ++psIdx){
+        uint gIdx = directViewDirBuffer[getDispatchIndex()].idx[psIdx];
+
+        //
+
+        float3 rayOrigW = ray.Origin;
+        float3 rayDirW = ray.Direction;
+
+
+        Range range = particleSystemRanges[gIdx];
+
+        uint IdxEnd = range.size + range.offset;
+
+        bool isHit = false;
+
+        float2 hitUV = float2(0.0);
+
+        DebugInfo dbinfo = {
+            cnt,
+            gIdx,
+        };
+
+        dBuffer[getDispatchIndex()] = dbinfo;
+
+        for (uint particle_ID = range.offset; particle_ID < IdxEnd; ++particle_ID){
+            Particle pd = particlePool[particle_ID];
+            float rot = -pd.rotate;
+
+            float cosTheta = cos(rot);
+            float sinTheta = sin(rot);
+
+            float3 center = pd.center;
+            float radius = pd.scale;
+
+            float4x4 translateMat = getTranslateMat(-center);
+            float4x4 rotAroundZ = float4x4(float4(cosTheta, sinTheta,0,0), float4(-sinTheta, cosTheta, 0, 0), float4(0, 0, 1, 0), float4(0, 0, 0, 1));
+            float4x4 worldToSpriteLocalMat = mul(rotAroundZ, mul(rotWorld2View, translateMat));
+
+            float4 rotRayDir = mul(worldToSpriteLocalMat,float4(rayDirW, 0));
+
+            float4 rotRayOrig = mul(worldToSpriteLocalMat, float4(rayOrigW, 1));
+
+            if (abs(rotRayDir.z) > 1e-3){
+                float nowHitT = - rotRayOrig.z / rotRayDir.z;
+                float2 nowHitP = (rotRayOrig + nowHitT * rotRayDir).xy;
+
+                float2 UV = nowHitP / float2(radius);
+
+                if (nowHitT >= ray.TMin && nowHitT < tMax && all(abs(UV) < float2(1.0))){
+                    UV = UV * float2(0.5) + float2(0.5);
+                    isHit = true;
+                    hitUV = UV;
+                    float4 spriteColor = float4((gIdx & 2) >> 1, gIdx & 1, sin(particle_ID) * 0.5 + 0.5, cos(particle_ID) * 0.5 + 0.5);
+                    HitPoint lastVal = {spriteColor,nowHitT};
+                    for (uint i = 0;i < MAX_OIT_CNT_PRERAY; ++i){
+                        if (arrayHitT[i].hitT < nowHitT){
+                            HitPoint tmp = lastVal;
+                            lastVal = arrayHitT[i];
+                            arrayHitT[i] = tmp;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for (uint i = 0;i < MAX_OIT_CNT_PRERAY; ++i){
+        if (arrayHitT[i].hitT > 0){
+            color += lerp(color,arrayHitT[i].color.rgb,arrayHitT[i].color.a);
+        }
+    }
+}
+
+void updateRayState(VertexData v, ShadingData sd, ScatterRayData rayData, bool isPrimaryRay, inout float3 specularCoefficient, inout RayDesc ray, inout float3 vDir){
+    // A very non-PBR inaccurate way to do reflections
+    float alpha = min(0.5, max(1e-8, sd.ggxAlpha));
+
+    // if not primary ray, calc the falloff of coef
+    if (!isPrimaryRay){
+        specularCoefficient = rayData.hitT == -1 ? 0 : specularCoefficient;
+        float falloff = max(1, (rayData.hitT * rayData.hitT));
+        specularCoefficient *= 20 / falloff;
+    }
+    specularCoefficient *= sd.specular * (alpha * alpha);
+
+    // reflection
+    RayDesc tmpRay;
+    tmpRay.Origin = ray.Origin + ray.Direction * rayData.hitT;
+    tmpRay.Direction = reflect(ray.Direction, v.normalW);
+    // float3 lastViewDir = directViewDirBuffer[getDispatchIndex()];
+    // directViewDirBuffer[getDispatchIndex()] = reflect(lastViewDir, v.normalW);
+    vDir = reflect(vDir, v.normalW);
+    tmpRay.TMin = 0.001;
+    tmpRay.TMax = 100000;
+    ray = tmpRay;
 }
 
 [shader("raygeneration")]
@@ -313,36 +449,37 @@ void rayGenIR(
     }
 
     ScatterRayData rayData;
-    directViewDirBuffer[getDispatchIndex()] = getCameraViewDir();
+    // directViewDirBuffer[getDispatchIndex()] = getCameraViewDir();
+    float3 vDir = getCameraViewDir();
     const uint maxDepth = 2;
     float4 accColor = float4(0.0,0.0,0.0,1.0);
-    float3 aSpecular = float3(1.0);
+    float3 specularCoefficient = float3(1.0);
+    float3 color = 0.0;
 
     for (uint depth = 0; depth < maxDepth; ++depth){
+        ShadingData sd;
+        VertexData v;
         rayData.packedHitInfo = { HitInfo::kInvalidIndex };
+        rayData.aabbHitCnt = 0;
+        directViewDirBuffer[getDispatchIndex()].cnt = 0;
         TraceRay(gRtScene, 0 /*rayFlags*/, 0xFF, 0 /* ray index*/, hitProgramCount, 0, ray, rayData);
+        bool bShouldUpdateState = false;
         if (rayData.packedHitInfo.x != HitInfo::kInvalidIndex){
+            bShouldUpdateState = true;
             HitInfo tmpHit;
-            bool isEndRef = false;
             tmpHit.decode(rayData.packedHitInfo);
-            VertexData v = gScene.getVertexData(tmpHit);
+            v = gScene.getVertexData(tmpHit);
             //
             uint materialID = gScene.getMaterialID(tmpHit.instanceID);
-            ShadingData sd = prepareShadingData(v, materialID, gScene.materials[materialID], gScene.materialResources[materialID], -ray.Direction, 0);
+            sd = prepareShadingData(v, materialID, gScene.materials[materialID], gScene.materialResources[materialID], -ray.Direction, 0);
 
-
-            // Shoot a reflection ray
-            // float3 reflectColor = float3(0.0);
-            // if (rayData.hitKind != kSpriteHitKind){
-            //     reflectColor = getReflectionColor(posW, v, rayDirW, hitData.depth.r);
-            // }
-            float3 color = 0;
+            color = float3(0);
 
             float3 posW = ray.Origin + ray.Direction * rayData.hitT;
 
             if (rayData.hitKind == kSpriteHitKind){
                 color = float3(0,0,1);
-                isEndRef = true;
+                bShouldUpdateState = false;
             }
             else{
                 for (int i = 0; i < gScene.getLightCount(); i++)
@@ -355,35 +492,21 @@ void rayGenIR(
             }
 
             color += sd.emissive;
-            accColor.rgb += aSpecular * color;
+            color *= specularCoefficient;
 
-            if (isEndRef){
-                break;
-            }
-
-            // A very non-PBR inaccurate way to do reflections
-            float alpha = min(0.5, max(1e-8, sd.ggxAlpha));
-            //accColor.rgb += sd.specular * reflectColor * (alpha * alpha);
-
-            if (depth > 0){
-                aSpecular = rayData.hitT == -1 ? 0 : aSpecular;
-                float falloff = max(1, (rayData.hitT * rayData.hitT));
-                aSpecular *= 20 / falloff;
-            }
-            aSpecular *= sd.specular * (alpha * alpha);
-
-            RayDesc tmpRay;
-            tmpRay.Origin = posW;
-            tmpRay.Direction = reflect(ray.Direction, v.normalW);
-            float3 lastViewDir = directViewDirBuffer[getDispatchIndex()];
-            directViewDirBuffer[getDispatchIndex()] = reflect(lastViewDir, v.normalW);
-            tmpRay.TMin = 0.001;
-            tmpRay.TMax = 100000;
-            ray = tmpRay;
+            accColor.rgb += color;
         }
         else{
-            accColor.rgb += aSpecular * float3(0.38f, 0.52f, 0.10f);
+            color = specularCoefficient * float3(0.38f, 0.52f, 0.10f);
         }
+
+        dealWithSpriteAndBlend(vDir, ray, rayData, color);
+
+        if (bShouldUpdateState){
+            updateRayState(v, sd, rayData, depth == 0, specularCoefficient, ray, vDir);
+        }
+
+        accColor.rgb += color;
     }
 
     gOutput[launchIndex.xy] = accColor;
@@ -424,7 +547,7 @@ void spriteIntersection(uniform HitShaderParams hitParams)
     float3 center = aabbData.center();
     float radius = aabbData.extent().x * 0.25 * sqrt(2.0); // * 0.5 / sqrt2
 
-    float3 viewDir = directViewDirBuffer[getDispatchIndex()];
+    float3 viewDir = float3(0.0);//directViewDirBuffer[getDispatchIndex()];
 
     float3 right = normalize(getOrthoVector(viewDir));
 
@@ -497,7 +620,7 @@ void spriteEmitterAABBIntersection(uniform HitShaderParams hitParams)
 
     uint IdxEnd = range.size + range.offset;
 
-    float3 viewDir = directViewDirBuffer[getDispatchIndex()];
+    float3 viewDir = float3(0);// directViewDirBuffer[getDispatchIndex()];
 
     float3 right = normalize(getOrthoVector(viewDir));
 
@@ -548,5 +671,15 @@ void spriteEmitterAABBIntersection(uniform HitShaderParams hitParams)
     if (isHit){
         ReportHit(THit, kSpriteHitKind, attr);
     }
+    
+}
+
+
+[shader("intersection")]
+void spriteEmitterAABBIntersectionSimple(uniform HitShaderParams hitParams)
+{
+    BuiltInTriangleIntersectionAttributes attr = {float2(0.0)};
+    attr.barycentrics.x = asfloat(hitParams.geometryIndex);
+    ReportHit(RayTCurrent(), kSpriteHitKind, attr);
     
 }
