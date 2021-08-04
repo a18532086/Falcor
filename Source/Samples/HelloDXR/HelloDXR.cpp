@@ -171,11 +171,14 @@ void HelloDXR::loadScene(const std::string& filename, const Fbo* pTargetFbo)
     rtProgDesc.addAABBHitGroup(0, "primaryClosestHitIR", "primaryAnyHitIR");
     rtProgDesc.addAABBHitGroup(1, "", "shadowAnyHit");
 #if defined(USE_EMITTER_AABB)
-    rtProgDesc.addIntersection(eTypeSprite, "spriteEmitterAABBIntersection");
+    rtProgDesc.addIntersection(eTypeSprite, "spriteEmitterAABBIntersectionSimple");
 #else
     rtProgDesc.addIntersection(eTypeSprite, "spriteIntersection");
 #endif
     rtProgDesc.addDefines(mpScene->getSceneDefines());
+#ifdef _DEBUG
+    rtProgDesc.addDefine("_DEBUG", "1");
+#endif
     rtProgDesc.setMaxTraceRecursionDepth(3); // 1 for calling TraceRay from RayGen, 1 for calling it from the primary-ray ClosestHitShader for reflections, 1 for reflection ray tracing a shadow ray
 
     mpRaytraceProgram = RtProgram::create(rtProgDesc);
@@ -287,8 +290,10 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
     {
         mpScene = pSB->getScene();
         mpRtVars = RtProgramVars::create(mpRaytraceProgram, mpScene);
+#ifdef _DEBUG
         std::vector<uint8_t> vc(mpDBuffer->getSize(), 0);
         mpDBuffer->setBlob(vc.data(), 0, vc.size());
+#endif
 #if defined(USE_EMITTER_AABB)
         if (!ranges.empty())
         {
@@ -300,7 +305,9 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
         mpRtVars->setBuffer("rotatePool", mpRotateBuffer);
 #endif
         mpRtVars->setBuffer("directViewDirBuffer", mpDirViewBuffer);
+#ifdef _DEBUG
         mpRtVars->setBuffer("dBuffer", mpDBuffer);
+#endif
         mpRaytraceProgram->setScene(mpScene);
     }
 
@@ -368,7 +375,9 @@ void HelloDXR::onResizeSwapChain(uint32_t width, uint32_t height)
     if (mpRaytraceProgram)
     {
         mpDirViewBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "directViewDirBuffer", height * width, ResourceBindFlags::UnorderedAccess);
+#ifdef _DEBUG
         mpDBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "dBuffer", height * width, ResourceBindFlags::UnorderedAccess);
+#endif
     }
 
 }

@@ -97,8 +97,9 @@ private:
     Buffer::SharedPtr mpRotateBuffer;
     Buffer::SharedPtr mpDirViewBuffer;
     Buffer::SharedPtr mpRangeBuffer;
+#ifdef _DEBUG
     Buffer::SharedPtr mpDBuffer;
-
+#endif
     uint32_t mSampleIndex = 0xdeadbeef;
 
     void setPerFrameVars(const Fbo* pTargetFbo);

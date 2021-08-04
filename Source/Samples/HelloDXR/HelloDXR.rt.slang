@@ -31,18 +31,20 @@ import Scene.Raytracing;
 import Utils.Helpers;
 import Scene.HitInfo;
 
-#ifndef MAX_AABB_CNT_PRERAY
-#define MAX_AABB_CNT_PRERAY 10
+#ifndef MAX_AABB_CNT_PERRAY
+#define MAX_AABB_CNT_PERRAY 10
 #endif
 
-#ifndef MAX_OIT_CNT_PRERAY
-#define MAX_OIT_CNT_PRERAY 10
+#ifndef MAX_OIT_CNT_PERRAY
+#define MAX_OIT_CNT_PERRAY 3
 #endif
 
+#ifdef _DEBUG
 struct DebugInfo{
     uint begin;
     uint size;
 };
+#endif
 
 struct Particle{
     float3 center;
@@ -57,12 +59,14 @@ struct Range{
 
 struct AHS_RGS_Payload_t{
     uint cnt;
-    uint idx[MAX_AABB_CNT_PRERAY];
+    uint idx[MAX_AABB_CNT_PERRAY];
 }
 
 StructuredBuffer<float> rotatePool;
 RWStructuredBuffer<AHS_RGS_Payload_t> directViewDirBuffer : register(u3);
+#ifdef _DEBUG
 RWStructuredBuffer<DebugInfo> dBuffer : register(u4);
+#endif
 StructuredBuffer<Particle> particlePool;
 StructuredBuffer<Range> particleSystemRanges;
 
@@ -99,7 +103,7 @@ struct ScatterRayData
     uint hitKind;
     float hitT;
     uint aabbHitCnt;
-    uint aabbIdx[MAX_AABB_CNT_PRERAY];
+    uint aabbIdx[MAX_AABB_CNT_PERRAY];
 };
 
 
@@ -265,7 +269,7 @@ void primaryAnyHitIR(
     BuiltInTriangleIntersectionAttributes   attribs)
 {
     if (HitKind() == kSpriteHitKind){
-        if (directViewDirBuffer[getDispatchIndex()].cnt < MAX_AABB_CNT_PRERAY){
+        if (directViewDirBuffer[getDispatchIndex()].cnt < MAX_AABB_CNT_PERRAY){
             uint idx = directViewDirBuffer[getDispatchIndex()].cnt++;
             directViewDirBuffer[getDispatchIndex()].idx[idx] = asuint(attribs.barycentrics.x);
         }
@@ -309,19 +313,22 @@ void rayGen(
 }
 
 struct HitPoint{
-    float4 color;
+    float3 p;
+    float t;
     float hitT;
 }
 
 void dealWithSpriteAndBlend(float3 vDir, RayDesc ray, ScatterRayData rayData, inout float3 color){
 
-    HitPoint arrayHitT[MAX_OIT_CNT_PRERAY];
-
-    for (uint i = 0; i < MAX_OIT_CNT_PRERAY; ++i){
-        arrayHitT[i].hitT = 0;
-    }
+    HitPoint arrayHitT[MAX_OIT_CNT_PERRAY + 1];
 
     float tMax = rayData.packedHitInfo.x == HitInfo::kInvalidIndex ?  100000 : rayData.hitT;
+
+    for (uint i = 0; i < MAX_OIT_CNT_PERRAY + 1; ++i){
+        arrayHitT[i].hitT = tMax;
+        arrayHitT[i].p = float3(0);
+        arrayHitT[i].t = 1;
+    }
 
     float3 viewDir = vDir;
 
@@ -331,10 +338,10 @@ void dealWithSpriteAndBlend(float3 vDir, RayDesc ray, ScatterRayData rayData, in
 
     float4x4 rotWorld2View = getNewBasisMat(right,up,viewDir);
 
-    uint cnt = directViewDirBuffer[getDispatchIndex()].cnt;
+    AHS_RGS_Payload_t RGS_info = directViewDirBuffer[getDispatchIndex()];
 
-    for (uint psIdx = 0; psIdx < cnt; ++psIdx){
-        uint gIdx = directViewDirBuffer[getDispatchIndex()].idx[psIdx];
+    for (uint psIdx = 0; psIdx < RGS_info.cnt; ++psIdx){
+        uint gIdx = RGS_info.idx[psIdx];
 
         //
 
@@ -349,6 +356,7 @@ void dealWithSpriteAndBlend(float3 vDir, RayDesc ray, ScatterRayData rayData, in
         bool isHit = false;
 
         float2 hitUV = float2(0.0);
+#ifdef _DEBUG
 
         DebugInfo dbinfo = {
             cnt,
@@ -356,6 +364,7 @@ void dealWithSpriteAndBlend(float3 vDir, RayDesc ray, ScatterRayData rayData, in
         };
 
         dBuffer[getDispatchIndex()] = dbinfo;
+#endif
 
         for (uint particle_ID = range.offset; particle_ID < IdxEnd; ++particle_ID){
             Particle pd = particlePool[particle_ID];
@@ -385,23 +394,33 @@ void dealWithSpriteAndBlend(float3 vDir, RayDesc ray, ScatterRayData rayData, in
                     UV = UV * float2(0.5) + float2(0.5);
                     isHit = true;
                     hitUV = UV;
-                    float4 spriteColor = float4((gIdx & 2) >> 1, gIdx & 1, sin(particle_ID) * 0.5 + 0.5, cos(particle_ID) * 0.5 + 0.5);
-                    HitPoint lastVal = {spriteColor,nowHitT};
-                    for (uint i = 0;i < MAX_OIT_CNT_PRERAY; ++i){
-                        if (arrayHitT[i].hitT < nowHitT){
+                    float4 spriteColor = float4((gIdx & 2) >> 1, gIdx & 1, gIdx & 1, 0.5);
+                    //HitPoint lastVal = {spriteColor.rgb * spriteColor.a, 1 - spriteColor.a, nowHitT};
+                    HitPoint lastVal;
+                    lastVal.p = spriteColor.rgb * spriteColor.a;
+                    lastVal.t = 1.0 - spriteColor.a;
+                    lastVal.hitT = nowHitT;
+                    for (uint i = 0;i < MAX_OIT_CNT_PERRAY + 1; ++i){
+                        if (arrayHitT[i].hitT > nowHitT){
                             HitPoint tmp = lastVal;
                             lastVal = arrayHitT[i];
                             arrayHitT[i] = tmp;
                         }
                     }
+                    HitPoint merge;
+                    merge.p = arrayHitT[MAX_OIT_CNT_PERRAY - 1].p + (arrayHitT[MAX_OIT_CNT_PERRAY].p * arrayHitT[MAX_OIT_CNT_PERRAY - 1].t);
+                    merge.t = arrayHitT[MAX_OIT_CNT_PERRAY - 1].t * arrayHitT[MAX_OIT_CNT_PERRAY].t;
+                    merge.hitT = arrayHitT[MAX_OIT_CNT_PERRAY - 1].hitT;
+                    arrayHitT[MAX_OIT_CNT_PERRAY - 1] = merge;
                 }
             }
         }
     }
 
-    for (uint i = 0;i < MAX_OIT_CNT_PRERAY; ++i){
-        if (arrayHitT[i].hitT > 0){
-            color += lerp(color,arrayHitT[i].color.rgb,arrayHitT[i].color.a);
+    for (uint i = 0;i < MAX_OIT_CNT_PERRAY; ++i){
+        uint idx = MAX_OIT_CNT_PERRAY - i - 1;
+        if (arrayHitT[idx].hitT < tMax){
+            color = arrayHitT[idx].p + (color * arrayHitT[idx].t);
         }
     }
 }
@@ -497,16 +516,21 @@ void rayGenIR(
             accColor.rgb += color;
         }
         else{
-            color = specularCoefficient * float3(0.38f, 0.52f, 0.10f);
+            color = specularCoefficient * float3(0.01);
         }
 
         dealWithSpriteAndBlend(vDir, ray, rayData, color);
 
+        
+        accColor.rgb += color;
+
         if (bShouldUpdateState){
             updateRayState(v, sd, rayData, depth == 0, specularCoefficient, ray, vDir);
         }
+        else{
+            break;
+        }
 
-        accColor.rgb += color;
     }
 
     gOutput[launchIndex.xy] = accColor;
