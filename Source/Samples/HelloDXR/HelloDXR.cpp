@@ -56,6 +56,72 @@ namespace
     };
 };
 
+void HelloDXR::createParticleSystem(ExamplePixelShaders shadertype)
+{
+    uint32_t particleMaxSize = mGuiData.mMaxParticles;
+    for (auto pPS : mpParticleSystems)
+    {
+
+        particleMaxSize += pPS->getMaxParticles();
+    }
+#if defined(USE_EMITTER_AABB)
+    mpRotateBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "particlePool", particleMaxSize);
+#else
+    mpRotateBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "rotatePool", particleMaxSize);
+#endif
+
+#if defined(USE_EMITTER_AABB)
+    mpRangeBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "particleSystemRanges", static_cast<uint32_t>(mpParticleSystems.size()) + 1);
+#endif
+
+    auto pContext = gpDevice->getRenderContext();
+    switch (shadertype)
+    {
+    case ExamplePixelShaders::ConstColor:
+    {
+        ParticleSystem::SharedPtr pSys = ParticleSystem::create(pContext, mGuiData.mMaxParticles,
+            mGuiData.mMaxEmitPerFrame, kConstColorPs, ParticleSystem::kDefaultSimulateShader, mGuiData.mSortSystem);
+        mpParticleSystems.push_back(pSys);
+        mPsData.push_back(glm::vec4(1.f, 0.f, 0.f, 1.f));
+        mpParticleSystems[mpParticleSystems.size() - 1]->getDrawVars()["PsPerFrame"].setBlob(&mPsData[mPsData.size() - 1].colorData.color1, sizeof(glm::vec4));
+        break;
+    }
+    case ExamplePixelShaders::ColorInterp:
+    {
+        ParticleSystem::SharedPtr pSys = ParticleSystem::create(pContext, mGuiData.mMaxParticles,
+            mGuiData.mMaxEmitPerFrame, kColorInterpPs, ParticleSystem::kDefaultSimulateShader, mGuiData.mSortSystem);
+        mpParticleSystems.push_back(pSys);
+        ColorInterpPsPerFrame perFrame;
+        perFrame.color1 = glm::vec4(1.f, 0.f, 0.f, 1.f);
+        perFrame.colorT1 = pSys->getParticleDuration();
+        perFrame.color2 = glm::vec4(0.f, 0.f, 1.f, 1.f);
+        perFrame.colorT2 = 0.f;
+        mPsData.push_back(perFrame);
+        mpParticleSystems[mpParticleSystems.size() - 1]->getDrawVars()["PsPerFrame"].setBlob(&mPsData[mPsData.size() - 1].colorData, sizeof(ColorInterpPsPerFrame));
+        break;
+    }
+    case ExamplePixelShaders::Textured:
+    {
+        ParticleSystem::SharedPtr pSys = ParticleSystem::create(pContext, mGuiData.mMaxParticles,
+            mGuiData.mMaxEmitPerFrame, kTexturedPs, ParticleSystem::kDefaultSimulateShader, mGuiData.mSortSystem);
+        mpParticleSystems.push_back(pSys);
+        ColorInterpPsPerFrame perFrame;
+        perFrame.color1 = glm::vec4(1.f, 1.f, 1.f, 1.f);
+        perFrame.colorT1 = pSys->getParticleDuration();
+        perFrame.color2 = glm::vec4(1.f, 1.f, 1.f, 0.1f);
+        perFrame.colorT2 = 0.f;
+        mPsData.push_back(PixelShaderData(0, perFrame));
+        pSys->getDrawVars()->setTexture("gTex", mpTextures[0]);
+        mpParticleSystems[mpParticleSystems.size() - 1]->getDrawVars()["PsPerFrame"].setBlob(&mPsData[mPsData.size() - 1].colorData, sizeof(ColorInterpPsPerFrame));
+        break;
+    }
+    default:
+    {
+        should_not_get_here();
+    }
+    }
+}
+
 void HelloDXR::onGuiRender(Gui* pGui)
 {
     Gui::Window w(pGui, "Hello DXR Settings", { 300, 400 }, { 10, 80 });
@@ -74,72 +140,11 @@ void HelloDXR::onGuiRender(Gui* pGui)
     w.var("Max Emit Per Frame", mGuiData.mMaxEmitPerFrame, 0);
     w.checkbox("Sorted", mGuiData.mSortSystem);
     w.dropdown("PixelShader", kPixelShaders, mGuiData.mPixelShaderIndex);
+    w.text("Ray Tracing Time: " + std::to_string(mRTTime) + "ms");
 
     if (w.button("Create"))
     {
-
-        uint32_t particleMaxSize = mGuiData.mMaxParticles;
-        for (auto pPS:mpParticleSystems)
-        {
-
-            particleMaxSize += pPS->getMaxParticles();
-        }
-#if defined(USE_EMITTER_AABB)
-        mpRotateBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "particlePool", particleMaxSize);
-#else
-        mpRotateBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "rotatePool", particleMaxSize);
-#endif
-
-#if defined(USE_EMITTER_AABB)
-        mpRangeBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "particleSystemRanges", static_cast<uint32_t>(mpParticleSystems.size()) + 1);
-#endif
-
-        auto pContext = gpDevice->getRenderContext();
-        switch ((ExamplePixelShaders)mGuiData.mPixelShaderIndex)
-        {
-        case ExamplePixelShaders::ConstColor:
-        {
-            ParticleSystem::SharedPtr pSys = ParticleSystem::create(pContext, mGuiData.mMaxParticles,
-                mGuiData.mMaxEmitPerFrame, kConstColorPs, ParticleSystem::kDefaultSimulateShader, mGuiData.mSortSystem);
-            mpParticleSystems.push_back(pSys);
-            mPsData.push_back(glm::vec4(1.f, 0.f, 0.f, 1.f));
-            mpParticleSystems[mpParticleSystems.size() - 1]->getDrawVars()["PsPerFrame"].setBlob(&mPsData[mPsData.size() - 1].colorData.color1, sizeof(glm::vec4));
-            break;
-        }
-        case ExamplePixelShaders::ColorInterp:
-        {
-            ParticleSystem::SharedPtr pSys = ParticleSystem::create(pContext, mGuiData.mMaxParticles,
-                mGuiData.mMaxEmitPerFrame, kColorInterpPs, ParticleSystem::kDefaultSimulateShader, mGuiData.mSortSystem);
-            mpParticleSystems.push_back(pSys);
-            ColorInterpPsPerFrame perFrame;
-            perFrame.color1 = glm::vec4(1.f, 0.f, 0.f, 1.f);
-            perFrame.colorT1 = pSys->getParticleDuration();
-            perFrame.color2 = glm::vec4(0.f, 0.f, 1.f, 1.f);
-            perFrame.colorT2 = 0.f;
-            mPsData.push_back(perFrame);
-            mpParticleSystems[mpParticleSystems.size() - 1]->getDrawVars()["PsPerFrame"].setBlob(&mPsData[mPsData.size() - 1].colorData, sizeof(ColorInterpPsPerFrame));
-            break;
-        }
-        case ExamplePixelShaders::Textured:
-        {
-            ParticleSystem::SharedPtr pSys = ParticleSystem::create(pContext, mGuiData.mMaxParticles,
-                mGuiData.mMaxEmitPerFrame, kTexturedPs, ParticleSystem::kDefaultSimulateShader, mGuiData.mSortSystem);
-            mpParticleSystems.push_back(pSys);
-            ColorInterpPsPerFrame perFrame;
-            perFrame.color1 = glm::vec4(1.f, 1.f, 1.f, 1.f);
-            perFrame.colorT1 = pSys->getParticleDuration();
-            perFrame.color2 = glm::vec4(1.f, 1.f, 1.f, 0.1f);
-            perFrame.colorT2 = 0.f;
-            mPsData.push_back(PixelShaderData(0, perFrame));
-            pSys->getDrawVars()->setTexture("gTex", mpTextures[0]);
-            mpParticleSystems[mpParticleSystems.size() - 1]->getDrawVars()["PsPerFrame"].setBlob(&mPsData[mPsData.size() - 1].colorData, sizeof(ColorInterpPsPerFrame));
-            break;
-        }
-        default:
-        {
-            should_not_get_here();
-        }
-        }
+        createParticleSystem((ExamplePixelShaders)mGuiData.mPixelShaderIndex);
     }
 
     mpScene->renderUI(w);
@@ -215,7 +220,15 @@ void HelloDXR::renderRT(RenderContext* pContext, const Fbo* pTargetFbo)
     setPerFrameVars(pTargetFbo);
 
     pContext->clearUAV(mpRtOut->getUAV().get(), kClearColor);
+    if (mpTimer == nullptr)
+    {
+        mpTimer = GpuTimer::create();
+    }
+    mpTimer->begin();
     mpScene->raytrace(pContext, mpRaytraceProgram.get(), mpRtVars, uint3(pTargetFbo->getWidth(), pTargetFbo->getHeight(), 1));
+    mpTimer->end();
+    mRTTime = mpTimer->getElapsedTime();
+
     pContext->blit(mpRtOut->getSRV(), pTargetFbo->getRenderTargetView(0));
 }
 
@@ -244,6 +257,13 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
         if (mbPS)
         {
             (*it)->update(pContext, static_cast<float>(gpFramework->getGlobalClock().getDelta()), mpCamera->getViewMatrix());
+        }
+        if (mbCreatePS)
+        {
+            for (int i = 0; i < 7;++i)
+            {
+                (*it)->update(pContext, 0.1f, mpCamera->getViewMatrix());
+            }
         }
         if (mbShowRasterPS)
         {
@@ -284,6 +304,11 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
 #endif
         }
         
+    }
+
+    if (mbCreatePS)
+    {
+        mbCreatePS = false;
     }
 
     if (bshouldUpdateAABB)
@@ -348,6 +373,19 @@ bool HelloDXR::onKeyEvent(const KeyboardEvent& keyEvent)
     if (keyEvent.key == KeyboardEvent::Key::I && keyEvent.type == KeyboardEvent::Type::KeyPressed)
     {
         mbShowRasterPS = !mbShowRasterPS;
+        return true;
+    }
+    if (keyEvent.key == KeyboardEvent::Key::U && keyEvent.type == KeyboardEvent::Type::KeyPressed)
+    {
+        createParticleSystem(ExamplePixelShaders::ConstColor);
+        createParticleSystem(ExamplePixelShaders::ConstColor);
+        createParticleSystem(ExamplePixelShaders::ConstColor);
+        mpCamera->setPosition(float3(-1.646739, 2.510957, 2.434580));
+        mpCamera->setTarget(float3(-1.033757, 2.431306, 1.648509));
+        mpCamera->setUpVector(float3(0,1,0));
+        mbCreatePS = true;
+        mbPS = false;
+        mbUpdateAABB = true;
         return true;
     }
     if (mpScene && mpScene->onKeyEvent(keyEvent)) return true;

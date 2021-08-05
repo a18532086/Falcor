@@ -36,7 +36,7 @@ import Scene.HitInfo;
 #endif
 
 #ifndef MAX_OIT_CNT_PERRAY
-#define MAX_OIT_CNT_PERRAY 3
+#define MAX_OIT_CNT_PERRAY 2
 #endif
 
 #ifdef _DEBUG
@@ -359,7 +359,7 @@ void dealWithSpriteAndBlend(float3 vDir, RayDesc ray, ScatterRayData rayData, in
 #ifdef _DEBUG
 
         DebugInfo dbinfo = {
-            cnt,
+            RGS_info.cnt,
             gIdx,
         };
 

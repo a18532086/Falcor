@@ -88,6 +88,7 @@ private:
     bool mbPS = true;
     bool mbUpdateAABB = false;
     bool mbShowRasterPS = false;
+    bool mbCreatePS = false;
     RtProgramVars::SharedPtr mpRtVars;
     //RtSceneRenderer::SharedPtr mpRtRenderer;
     Texture::SharedPtr mpRtOut;
@@ -97,6 +98,8 @@ private:
     Buffer::SharedPtr mpRotateBuffer;
     Buffer::SharedPtr mpDirViewBuffer;
     Buffer::SharedPtr mpRangeBuffer;
+    GpuTimer::SharedPtr mpTimer;
+    double mRTTime = 0.0;
 #ifdef _DEBUG
     Buffer::SharedPtr mpDBuffer;
 #endif
@@ -106,4 +109,5 @@ private:
     void renderRT(RenderContext* pContext, const Fbo* pTargetFbo);
     void loadScene(const std::string& filename, const Fbo* pTargetFbo);
     void renderParticleSystem(RenderContext* pContext, const Fbo::SharedPtr& pTargetFbo);
+    void createParticleSystem(::HelloDXR::ExamplePixelShaders shadertype);
 };
