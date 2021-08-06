@@ -535,7 +535,7 @@ namespace Falcor
         // so that the compiler does not complain about missing arguments for
         // specialization parameters.
         //
-        slangFlags |= SLANG_COMPILE_FLAG_NO_CODEGEN;
+        //slangFlags |= SLANG_COMPILE_FLAG_NO_CODEGEN;
 
         spSetCompileFlags(pSlangRequest, slangFlags);
 

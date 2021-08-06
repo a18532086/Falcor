@@ -47,13 +47,21 @@ namespace
     {
         float3 center;
         float scale;
-        float rotate;
+        float cosRot;
+        float sinRot;
     };
     struct Range
     {
         uint32_t offset;
         uint32_t size;
     };
+#ifdef _DEBUG
+    struct DebugInfo {
+        uint totaltime;
+        uint partTime;
+        float partPrecent;
+    };
+#endif
 };
 
 void HelloDXR::createParticleSystem(ExamplePixelShaders shadertype)
@@ -141,6 +149,11 @@ void HelloDXR::onGuiRender(Gui* pGui)
     w.checkbox("Sorted", mGuiData.mSortSystem);
     w.dropdown("PixelShader", kPixelShaders, mGuiData.mPixelShaderIndex);
     w.text("Ray Tracing Time: " + std::to_string(mRTTime) + "ms");
+#ifdef _DEBUG
+    w.text("Blend Total Time: " + std::to_string(mMaxTotTime) );
+    w.text("Blend Sort Time: " + std::to_string(mMaxPartTime) );
+    w.text("Blend Sort Percent: " + std::to_string(mMaxPrecent) + " %");
+#endif
 
     if (w.button("Create"))
     {
@@ -185,6 +198,9 @@ void HelloDXR::loadScene(const std::string& filename, const Fbo* pTargetFbo)
     rtProgDesc.addDefine("_DEBUG", "1");
 #endif
     rtProgDesc.setMaxTraceRecursionDepth(3); // 1 for calling TraceRay from RayGen, 1 for calling it from the primary-ray ClosestHitShader for reflections, 1 for reflection ray tracing a shadow ray
+
+    rtProgDesc.setCompilerFlags(Shader::CompilerFlags::GenerateDebugInfo);
+    rtProgDesc.setCompilerFlags(Shader::CompilerFlags::DumpIntermediates);
 
     mpRaytraceProgram = RtProgram::create(rtProgDesc);
     mpRtVars = RtProgramVars::create(mpRaytraceProgram, mpScene);
@@ -283,7 +299,7 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
                 AABB aabb(particle_info.pos - offset, particle_info.pos + offset);
                 maxAABB.minPoint = min(aabb.minPoint, maxAABB.minPoint);
                 maxAABB.maxPoint = max(aabb.maxPoint, maxAABB.maxPoint);
-                pds.push_back({ particle_info.pos,particle_info.scale,particle_info.rot });
+                pds.push_back({ particle_info.pos,particle_info.scale, cos(particle_info.rot) , sin(particle_info.rot) });
             }
             pSB->addCustomPrimitive(eTypeSprite, maxAABB);
             mpRotateBuffer->setBlob(pds.data(), bufOffset, pds.size() * sizeof(PS_Data));
@@ -310,6 +326,39 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
     {
         mbCreatePS = false;
     }
+#ifdef _DEBUG
+    if (mpDBuffer)
+    {
+
+        DebugInfo* dbInfos = static_cast<DebugInfo*>(mpDBuffer->map(Buffer::MapType::Read));
+        size_t dbinfoSize = mpDBuffer->getSize() / sizeof(DebugInfo);
+        mMaxPrecent = 0.0;
+        for (size_t i = 0; i < dbinfoSize; ++i)
+        {
+            if (i  == 319343)
+            {
+                mMaxPrecent = dbInfos[i].partPrecent;
+                mMaxTotTime = dbInfos[i].totaltime;
+                mMaxPartTime = dbInfos[i].partTime;
+            }
+        }
+        static uint frameCnt = 0;
+        static double totPrecent = 0.0;
+        static uint totTotTime = 0;
+        static uint totPartTime = 0;
+        if (mMaxPrecent > 0.0)
+        {
+            frameCnt += 1;
+            totPrecent += mMaxPrecent;
+            totTotTime += mMaxTotTime;
+            totPartTime += mMaxPartTime;
+            mMaxPrecent = totPrecent / frameCnt * 100.0;
+            mMaxTotTime = totTotTime / frameCnt;
+            mMaxPartTime = totPartTime / frameCnt;
+        }
+
+    }
+#endif
 
     if (bshouldUpdateAABB)
     {
@@ -319,6 +368,7 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
         std::vector<uint8_t> vc(mpDBuffer->getSize(), 0);
         mpDBuffer->setBlob(vc.data(), 0, vc.size());
 #endif
+
 #if defined(USE_EMITTER_AABB)
         if (!ranges.empty())
         {
@@ -380,8 +430,11 @@ bool HelloDXR::onKeyEvent(const KeyboardEvent& keyEvent)
         createParticleSystem(ExamplePixelShaders::ConstColor);
         createParticleSystem(ExamplePixelShaders::ConstColor);
         createParticleSystem(ExamplePixelShaders::ConstColor);
-        mpCamera->setPosition(float3(-1.646739, 2.510957, 2.434580));
-        mpCamera->setTarget(float3(-1.033757, 2.431306, 1.648509));
+        //mpCamera->setPosition(float3(-1.646739, 2.510957, 2.434580));
+        //mpCamera->setTarget(float3(-1.033757, 2.431306, 1.648509));
+        //mpCamera->setUpVector(float3(0,1,0));
+        mpCamera->setPosition(float3(-0.584588, 2.589808, 1.666172));
+        mpCamera->setTarget(float3(-0.036677, 2.358391, 0.862282));
         mpCamera->setUpVector(float3(0,1,0));
         mbCreatePS = true;
         mbPS = false;

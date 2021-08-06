@@ -101,6 +101,12 @@ private:
     GpuTimer::SharedPtr mpTimer;
     double mRTTime = 0.0;
 #ifdef _DEBUG
+    double mMaxPrecent = 0.0;
+    uint32_t mMaxTotTime = 0;
+    uint32_t mMaxPartTime = 0;
+#endif
+
+#ifdef _DEBUG
     Buffer::SharedPtr mpDBuffer;
 #endif
     uint32_t mSampleIndex = 0xdeadbeef;

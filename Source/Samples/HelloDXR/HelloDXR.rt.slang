@@ -30,6 +30,7 @@ import Scene.Shading;
 import Scene.Raytracing;
 import Utils.Helpers;
 import Scene.HitInfo;
+import Utils.Timing.GpuTimer;
 
 #ifndef MAX_AABB_CNT_PERRAY
 #define MAX_AABB_CNT_PERRAY 10
@@ -41,15 +42,17 @@ import Scene.HitInfo;
 
 #ifdef _DEBUG
 struct DebugInfo{
-    uint begin;
-    uint size;
+    uint totaltime;
+    uint partTime;
+    float partPrecent;
 };
 #endif
 
 struct Particle{
     float3 center;
     float scale;
-    float rotate;
+    float cosRot;
+    float sinRot;
 }
 
 struct Range{
@@ -318,7 +321,13 @@ struct HitPoint{
     float hitT;
 }
 
-void dealWithSpriteAndBlend(float3 vDir, RayDesc ray, ScatterRayData rayData, inout float3 color){
+float3 dealWithSpriteAndBlend(float3 vDir, RayDesc ray, ScatterRayData rayData, float3 color){
+
+#ifdef _DEBUG
+    GpuTimer totTimer, partTimer;
+    uint partTimeacc = 0;
+    totTimer.start();
+#endif
 
     HitPoint arrayHitT[MAX_OIT_CNT_PERRAY + 1];
 
@@ -330,15 +339,29 @@ void dealWithSpriteAndBlend(float3 vDir, RayDesc ray, ScatterRayData rayData, in
         arrayHitT[i].t = 1;
     }
 
+    uint nowMaxIdx = 0;
+
     float3 viewDir = vDir;
 
     float3 right = normalize(getOrthoVector(viewDir));
 
     float3 up = cross(viewDir,right);
 
-    float4x4 rotWorld2View = getNewBasisMat(right,up,viewDir);
+    float3x3 rotWorld2View = getNewBasisMat(right,up,viewDir);
 
     AHS_RGS_Payload_t RGS_info = directViewDirBuffer[getDispatchIndex()];
+
+
+    // To avoid flicker, sort AABBs by ID
+    // for (uint i = 0; i < RGS_info.cnt; ++i){
+    //     for (uint j = i + 1; j < RGS_info.cnt; ++j){
+    //         if (RGS_info.idx[i] > RGS_info.idx[j]){
+    //             uint tmp = RGS_info.idx[i];
+    //             RGS_info.idx[i] = RGS_info.idx[j];
+    //             RGS_info.idx[j] = tmp;
+    //         }
+    //     }
+    // }
 
     for (uint psIdx = 0; psIdx < RGS_info.cnt; ++psIdx){
         uint gIdx = RGS_info.idx[psIdx];
@@ -356,35 +379,28 @@ void dealWithSpriteAndBlend(float3 vDir, RayDesc ray, ScatterRayData rayData, in
         bool isHit = false;
 
         float2 hitUV = float2(0.0);
-#ifdef _DEBUG
-
-        DebugInfo dbinfo = {
-            RGS_info.cnt,
-            gIdx,
-        };
-
-        dBuffer[getDispatchIndex()] = dbinfo;
-#endif
 
         for (uint particle_ID = range.offset; particle_ID < IdxEnd; ++particle_ID){
             Particle pd = particlePool[particle_ID];
-            float rot = -pd.rotate;
+            //float rot = pd.rotate;
 
-            float cosTheta = cos(rot);
-            float sinTheta = sin(rot);
+            // float cosTheta = cos(rot);
+            // float sinTheta = sin(rot);
 
             float3 center = pd.center;
             float radius = pd.scale;
 
-            float4x4 translateMat = getTranslateMat(-center);
-            float4x4 rotAroundZ = float4x4(float4(cosTheta, sinTheta,0,0), float4(-sinTheta, cosTheta, 0, 0), float4(0, 0, 1, 0), float4(0, 0, 0, 1));
-            float4x4 worldToSpriteLocalMat = mul(rotAroundZ, mul(rotWorld2View, translateMat));
+            // float4x4 translateMat = getTranslateMat(-center);
+            // float4x4 rotAroundZ = float4x4(float4(cosTheta, sinTheta,0,0), float4(-sinTheta, cosTheta, 0, 0), float4(0, 0, 1, 0), float4(0, 0, 0, 1));
+            // float4x4 worldToSpriteLocalMat = mul(rotAroundZ, mul(float4x4(float4(rotWorld2View[0],0),float4(rotWorld2View[1],0),float4(rotWorld2View[2],0),float4(0,0,0,1)), translateMat));
 
-            float4 rotRayDir = mul(worldToSpriteLocalMat,float4(rayDirW, 0));
-
-            float4 rotRayOrig = mul(worldToSpriteLocalMat, float4(rayOrigW, 1));
+            float3 rotRayDir = rotateAroundZ(mul(rotWorld2View ,rayDirW), pd.cosRot, pd.sinRot);
+            float3 rotRayOrig = rotateAroundZ(mul(rotWorld2View ,rayOrigW - center), pd.cosRot, pd.sinRot);
+            // float4 rotRayDir = mul(worldToSpriteLocalMat ,float4(rayDirW,0));
+            // float4 rotRayOrig = mul(worldToSpriteLocalMat ,float4(rayOrigW,1));
 
             if (abs(rotRayDir.z) > 1e-3){
+
                 float nowHitT = - rotRayOrig.z / rotRayDir.z;
                 float2 nowHitP = (rotRayOrig + nowHitT * rotRayDir).xy;
 
@@ -400,29 +416,54 @@ void dealWithSpriteAndBlend(float3 vDir, RayDesc ray, ScatterRayData rayData, in
                     lastVal.p = spriteColor.rgb * spriteColor.a;
                     lastVal.t = 1.0 - spriteColor.a;
                     lastVal.hitT = nowHitT;
-                    for (uint i = 0;i < MAX_OIT_CNT_PERRAY + 1; ++i){
+#ifdef _DEBUG
+                partTimer.start();
+#endif
+                    for (uint i = 0;i < nowMaxIdx + 1; ++i){
                         if (arrayHitT[i].hitT > nowHitT){
                             HitPoint tmp = lastVal;
                             lastVal = arrayHitT[i];
                             arrayHitT[i] = tmp;
                         }
                     }
-                    HitPoint merge;
-                    merge.p = arrayHitT[MAX_OIT_CNT_PERRAY - 1].p + (arrayHitT[MAX_OIT_CNT_PERRAY].p * arrayHitT[MAX_OIT_CNT_PERRAY - 1].t);
-                    merge.t = arrayHitT[MAX_OIT_CNT_PERRAY - 1].t * arrayHitT[MAX_OIT_CNT_PERRAY].t;
-                    merge.hitT = arrayHitT[MAX_OIT_CNT_PERRAY - 1].hitT;
-                    arrayHitT[MAX_OIT_CNT_PERRAY - 1] = merge;
+#ifdef _DEBUG
+                    partTimeacc += partTimer.getElapsed();
+#endif
+                    if (nowMaxIdx == MAX_OIT_CNT_PERRAY){
+                        HitPoint merge;
+                        merge.p = arrayHitT[MAX_OIT_CNT_PERRAY - 1].p + (arrayHitT[MAX_OIT_CNT_PERRAY].p * arrayHitT[MAX_OIT_CNT_PERRAY - 1].t);
+                        merge.t = arrayHitT[MAX_OIT_CNT_PERRAY - 1].t * arrayHitT[MAX_OIT_CNT_PERRAY].t;
+                        merge.hitT = arrayHitT[MAX_OIT_CNT_PERRAY - 1].hitT;
+                        arrayHitT[MAX_OIT_CNT_PERRAY - 1] = merge;
+                    }
+                    else{
+                        ++nowMaxIdx;
+                    }
+
+                    
                 }
+
             }
         }
     }
 
-    for (uint i = 0;i < MAX_OIT_CNT_PERRAY; ++i){
-        uint idx = MAX_OIT_CNT_PERRAY - i - 1;
-        if (arrayHitT[idx].hitT < tMax){
-            color = arrayHitT[idx].p + (color * arrayHitT[idx].t);
-        }
+    for (uint i = 0;i < nowMaxIdx; ++i){
+        uint idx = nowMaxIdx - i - 1;
+        color = arrayHitT[idx].p + (color * arrayHitT[idx].t);
     }
+#ifdef _DEBUG
+    uint totTime = totTimer.getElapsed();
+    float precent = totTime == 0 ? 0 : 1.0 * partTimeacc / totTime;
+    DebugInfo dbinfo = {
+        totTime,
+        partTimeacc,
+        precent,
+    };
+
+    dBuffer[getDispatchIndex()] = dbinfo;
+#endif
+
+    return color;
 }
 
 void updateRayState(VertexData v, ShadingData sd, ScatterRayData rayData, bool isPrimaryRay, inout float3 specularCoefficient, inout RayDesc ray, inout float3 vDir){
@@ -519,7 +560,7 @@ void rayGenIR(
             color = specularCoefficient * float3(0.01);
         }
 
-        dealWithSpriteAndBlend(vDir, ray, rayData, color);
+        color = dealWithSpriteAndBlend(vDir, ray, rayData, color);
 
         
         accColor.rgb += color;
@@ -546,90 +587,84 @@ float4x4 getTranslateMat(float3 offset){
     return float4x4(float4(1, 0, 0, offset.x), float4(0, 1, 0, offset.y), float4(0, 0, 1, offset.z), float4(0, 0, 0, 1));
 }
 
-float4x4 getNewBasisMat(float3 x,float3 y, float3 z){
-    return float4x4(float4(x, 0) , float4(y, 0), float4(z, 0), float4(0, 0, 0, 1));
+float3x3 getNewBasisMat(float3 x,float3 y, float3 z){
+    return float3x3(x,y,z);
 }
 
 float3 getOrthoVector(float3 vec){
     return cross(vec,float3(0, 1, 0));
 }
 
-[shader("intersection")]
-void spriteIntersection(uniform HitShaderParams hitParams)
-{
-    float3 rayOrigW = WorldRayOrigin();
-    float3 rayDirW = WorldRayDirection();
-    float THit = RayTCurrent();
-    AABB aabbData = gScene.getProceduralPrimitiveAABB(InstanceID(), hitParams.geometryIndex);
+// [shader("intersection")]
+// void spriteIntersection(uniform HitShaderParams hitParams)
+// {
+//     float3 rayOrigW = WorldRayOrigin();
+//     float3 rayDirW = WorldRayDirection();
+//     float THit = RayTCurrent();
+//     AABB aabbData = gScene.getProceduralPrimitiveAABB(InstanceID(), hitParams.geometryIndex);
 
 
-    // rotate
-    float rot = -rotatePool[hitParams.geometryIndex];
-    float cosTheta = cos(rot);
-    float sinTheta = sin(rot);
+//     // rotate
+//     float rot = -rotatePool[hitParams.geometryIndex];
+//     float3 center = aabbData.center();
+//     float radius = aabbData.extent().x * 0.25 * sqrt(2.0); // * 0.5 / sqrt2
 
-    float3 center = aabbData.center();
-    float radius = aabbData.extent().x * 0.25 * sqrt(2.0); // * 0.5 / sqrt2
+//     float3 viewDir = float3(0.0);//directViewDirBuffer[getDispatchIndex()];
 
-    float3 viewDir = float3(0.0);//directViewDirBuffer[getDispatchIndex()];
+//     float3 right = normalize(getOrthoVector(viewDir));
 
-    float3 right = normalize(getOrthoVector(viewDir));
+//     float3 up = cross(viewDir,right);
 
-    float3 up = cross(viewDir,right);
+//     float3x3 rotWorld2View = getNewBasisMat(right,up,viewDir);
 
-    float4x4 rotWorld2View = getNewBasisMat(right,up,viewDir);
-    float4x4 translateMat = getTranslateMat(-center);
-    float4x4 rotAroundZ = float4x4(float4(cosTheta, sinTheta,0,0), float4(-sinTheta, cosTheta, 0, 0), float4(0, 0, 1, 0), float4(0, 0, 0, 1));
-    float4x4 worldToSpriteLocalMat = mul(rotAroundZ, mul(rotWorld2View, translateMat));
+//     float3 rotRayDir = rotateAroundZ(mul(rotWorld2View ,rayDirW), rot);
 
-    float4 rotRayDir = mul(worldToSpriteLocalMat,float4(rayDirW,0));
+//     float3 rotRayOrig = rotateAroundZ(mul(rotWorld2View ,rayOrigW - center), rot);
 
-    float4 rotRayOrig = mul(worldToSpriteLocalMat, float4(rayOrigW, 1));
+//     // DebugInfo
+//     bool isHit = false;
+//     float hittt = 0;
+//     float2 UV = float2(0.0);
+//     // DebugInfo
 
-    // DebugInfo
-    bool isHit = false;
-    float hittt = 0;
-    float2 UV = float2(0.0);
-    // DebugInfo
+//     if (abs(rotRayDir.z) > 1e-3){
+//         float nowHitT = - rotRayOrig.z / rotRayDir.z;
+//         float2 nowHitP = (rotRayOrig + nowHitT * rotRayDir).xy;
 
-    if (abs(rotRayDir.z) > 1e-3){
-        float nowHitT = - rotRayOrig.z / rotRayDir.z;
-        float2 nowHitP = (rotRayOrig + nowHitT * rotRayDir).xy;
+//         UV = nowHitP / float2(radius);
 
-        UV = nowHitP / float2(radius);
+//         if (all(abs(UV) < float2(1.0))){
+//             UV = UV * float2(0.5) + float2(0.5);
+//             BuiltInTriangleIntersectionAttributes attr = {UV};
+//             // DebugInfo
+//             isHit = true;
+//             hittt = nowHitT;
+//             // DebugInfo
+//             ReportHit(nowHitT, kSpriteHitKind, attr);
+//         }
+//     }
 
-        if (all(abs(UV) < float2(1.0))){
-            UV = UV * float2(0.5) + float2(0.5);
-            BuiltInTriangleIntersectionAttributes attr = {UV};
-            // DebugInfo
-            isHit = true;
-            hittt = nowHitT;
-            // DebugInfo
-            ReportHit(nowHitT, kSpriteHitKind, attr);
-        }
-    }
+//     // DebugInfo
 
-    // DebugInfo
-
-    // DebugInfo dinfo = {
-    // rayOrigW,
-    // isHit,
-    // rayDirW, 
-    // hittt,
-    // viewDir,
-    // rot,
-    // UV,
-    // hitParams.geometryIndex,
-    // radius,
-    // getCameraViewDir(),
-    // };
+//     // DebugInfo dinfo = {
+//     // rayOrigW,
+//     // isHit,
+//     // rayDirW, 
+//     // hittt,
+//     // viewDir,
+//     // rot,
+//     // UV,
+//     // hitParams.geometryIndex,
+//     // radius,
+//     // getCameraViewDir(),
+//     // };
 
 
-    // dBuffer[getDispatchIndex()] = dinfo;
-    // DebugInfo
+//     // dBuffer[getDispatchIndex()] = dinfo;
+//     // DebugInfo
 
     
-}
+// }
 
 [shader("intersection")]
 void spriteEmitterAABBIntersection(uniform HitShaderParams hitParams)
@@ -650,7 +685,7 @@ void spriteEmitterAABBIntersection(uniform HitShaderParams hitParams)
 
     float3 up = cross(viewDir,right);
 
-    float4x4 rotWorld2View = getNewBasisMat(right,up,viewDir);
+    float3x3 rotWorld2View = getNewBasisMat(right,up,viewDir);
 
     bool isHit = false;
 
@@ -658,21 +693,13 @@ void spriteEmitterAABBIntersection(uniform HitShaderParams hitParams)
 
     for (uint particle_ID = range.offset; particle_ID < IdxEnd; ++particle_ID){
         Particle pd = particlePool[particle_ID];
-        float rot = -pd.rotate;
-
-        float cosTheta = cos(rot);
-        float sinTheta = sin(rot);
 
         float3 center = pd.center;
         float radius = pd.scale;
 
-        float4x4 translateMat = getTranslateMat(-center);
-        float4x4 rotAroundZ = float4x4(float4(cosTheta, sinTheta,0,0), float4(-sinTheta, cosTheta, 0, 0), float4(0, 0, 1, 0), float4(0, 0, 0, 1));
-        float4x4 worldToSpriteLocalMat = mul(rotAroundZ, mul(rotWorld2View, translateMat));
+        float3 rotRayDir = rotateAroundZ(mul(rotWorld2View ,rayDirW), pd.cosRot, pd.sinRot);
 
-        float4 rotRayDir = mul(worldToSpriteLocalMat,float4(rayDirW, 0));
-
-        float4 rotRayOrig = mul(worldToSpriteLocalMat, float4(rayOrigW, 1));
+        float3 rotRayOrig = rotateAroundZ(mul(rotWorld2View ,rayOrigW - center), pd.cosRot, pd.sinRot);
 
         if (abs(rotRayDir.z) > 1e-3){
             float nowHitT = - rotRayOrig.z / rotRayDir.z;
@@ -706,4 +733,8 @@ void spriteEmitterAABBIntersectionSimple(uniform HitShaderParams hitParams)
     attr.barycentrics.x = asfloat(hitParams.geometryIndex);
     ReportHit(RayTCurrent(), kSpriteHitKind, attr);
     
+}
+
+float3 rotateAroundZ(float3 vec,float c,float s){
+    return float3(vec.x * c - vec.y * s, vec.x * s + vec.y * c, vec.z);
 }
