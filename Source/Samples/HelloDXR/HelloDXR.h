@@ -99,6 +99,8 @@ private:
     Buffer::SharedPtr mpDirViewBuffer;
     Buffer::SharedPtr mpRangeBuffer;
     GpuTimer::SharedPtr mpTimer;
+    Texture::SharedPtr mpTexture;
+    Sampler::SharedPtr mpLinearSampler;
     double mRTTime = 0.0;
 #ifdef _DEBUG
     double mMaxPrecent = 0.0;

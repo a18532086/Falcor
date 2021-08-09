@@ -182,7 +182,7 @@ namespace Falcor
     }
 
     // The max scalars supported by our driver
-    #define FALCOR_RT_MAX_PAYLOAD_SIZE_IN_BYTES (100 * sizeof(float))
+    #define FALCOR_RT_MAX_PAYLOAD_SIZE_IN_BYTES (15 * sizeof(float))
 
     // DXGI
     MAKE_SMART_COM_PTR(IDXGISwapChain3);

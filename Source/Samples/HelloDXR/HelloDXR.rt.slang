@@ -37,7 +37,7 @@ import Utils.Timing.GpuTimer;
 #endif
 
 #ifndef MAX_OIT_CNT_PERRAY
-#define MAX_OIT_CNT_PERRAY 2
+#define MAX_OIT_CNT_PERRAY 4
 #endif
 
 #ifdef _DEBUG
@@ -45,6 +45,7 @@ struct DebugInfo{
     uint totaltime;
     uint partTime;
     float partPrecent;
+    uint aabbIdxCnt;
 };
 #endif
 
@@ -72,6 +73,8 @@ RWStructuredBuffer<DebugInfo> dBuffer : register(u4);
 #endif
 StructuredBuffer<Particle> particlePool;
 StructuredBuffer<Range> particleSystemRanges;
+SamplerState gSampler;
+Texture2D gTex;
 
 static const int kSpriteHitKind = 0x01;
 
@@ -271,17 +274,21 @@ void primaryAnyHitIR(
     inout ScatterRayData rayData : SV_RayPayload,
     BuiltInTriangleIntersectionAttributes   attribs)
 {
+    ScatterRayData tmp = rayData;
     if (HitKind() == kSpriteHitKind){
-        if (directViewDirBuffer[getDispatchIndex()].cnt < MAX_AABB_CNT_PERRAY){
-            uint idx = directViewDirBuffer[getDispatchIndex()].cnt++;
-            directViewDirBuffer[getDispatchIndex()].idx[idx] = asuint(attribs.barycentrics.x);
+
+        if (tmp.aabbHitCnt < MAX_AABB_CNT_PERRAY){
+            uint idx = tmp.aabbHitCnt++;
+            tmp.aabbIdx[idx] = asuint(attribs.barycentrics.x);
         }
+        rayData = tmp;
         IgnoreHit();
     }
     else{
         // Alpha test for non-opaque geometry.
         VertexData v = getVertexData(hitParams, PrimitiveIndex(), attribs);
         uint materialID = gScene.getMaterialID(hitParams.getGlobalHitID());
+        rayData = tmp;
         if (alphaTest(v, gScene.materials[materialID], gScene.materialResources[materialID], 0.f))
         {
             IgnoreHit();
@@ -313,6 +320,10 @@ void rayGen(
     //directViewDirBuffer[getDispatchIndex()] = getCameraViewDir();
     TraceRay(gRtScene, 0 /*rayFlags*/, 0xFF, 0 /* ray index*/, hitProgramCount, 0, ray, hitData);
     gOutput[launchIndex.xy] = hitData.color;
+}
+
+float4 proceduralTexture(float2 UV){
+    return gTex.SampleLevel(gSampler, UV, 0.0);
 }
 
 struct HitPoint{
@@ -349,22 +360,23 @@ float3 dealWithSpriteAndBlend(float3 vDir, RayDesc ray, ScatterRayData rayData, 
 
     float3x3 rotWorld2View = getNewBasisMat(right,up,viewDir);
 
-    AHS_RGS_Payload_t RGS_info = directViewDirBuffer[getDispatchIndex()];
+    // AHS_RGS_Payload_t RGS_info = directViewDirBuffer[getDispatchIndex()];
+    ScatterRayData RGS_info = rayData;
 
 
     // To avoid flicker, sort AABBs by ID
-    // for (uint i = 0; i < RGS_info.cnt; ++i){
-    //     for (uint j = i + 1; j < RGS_info.cnt; ++j){
-    //         if (RGS_info.idx[i] > RGS_info.idx[j]){
-    //             uint tmp = RGS_info.idx[i];
-    //             RGS_info.idx[i] = RGS_info.idx[j];
-    //             RGS_info.idx[j] = tmp;
-    //         }
-    //     }
-    // }
+    for (uint i = 0; i < RGS_info.aabbHitCnt; ++i){
+        for (uint j = i + 1; j < RGS_info.aabbHitCnt; ++j){
+            if (RGS_info.aabbIdx[i] > RGS_info.aabbIdx[j]){
+                uint tmp = RGS_info.aabbIdx[i];
+                RGS_info.aabbIdx[i] = RGS_info.aabbIdx[j];
+                RGS_info.aabbIdx[j] = tmp;
+            }
+        }
+    }
 
-    for (uint psIdx = 0; psIdx < RGS_info.cnt; ++psIdx){
-        uint gIdx = RGS_info.idx[psIdx];
+    for (uint psIdx = 0; psIdx < RGS_info.aabbHitCnt; ++psIdx){
+        uint gIdx = RGS_info.aabbIdx[psIdx];
 
         //
 
@@ -410,7 +422,8 @@ float3 dealWithSpriteAndBlend(float3 vDir, RayDesc ray, ScatterRayData rayData, 
                     UV = UV * float2(0.5) + float2(0.5);
                     isHit = true;
                     hitUV = UV;
-                    float4 spriteColor = float4((gIdx & 2) >> 1, gIdx & 1, gIdx & 1, 0.5);
+                    // float4 spriteColor = float4((gIdx & 2) >> 1, gIdx & 1, gIdx & 1, 0.5);
+                    float4 spriteColor = proceduralTexture(UV);
                     //HitPoint lastVal = {spriteColor.rgb * spriteColor.a, 1 - spriteColor.a, nowHitT};
                     HitPoint lastVal;
                     lastVal.p = spriteColor.rgb * spriteColor.a;
@@ -458,6 +471,7 @@ float3 dealWithSpriteAndBlend(float3 vDir, RayDesc ray, ScatterRayData rayData, 
         totTime,
         partTimeacc,
         precent,
+        rayData.aabbHitCnt,
     };
 
     dBuffer[getDispatchIndex()] = dbinfo;
@@ -509,7 +523,6 @@ void rayGenIR(
     }
 
     ScatterRayData rayData;
-    // directViewDirBuffer[getDispatchIndex()] = getCameraViewDir();
     float3 vDir = getCameraViewDir();
     const uint maxDepth = 2;
     float4 accColor = float4(0.0,0.0,0.0,1.0);

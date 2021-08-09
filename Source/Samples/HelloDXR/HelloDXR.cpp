@@ -35,6 +35,7 @@ static const Gui::DropdownList kPixelShaders
 static const char* kConstColorPs = "Samples/HelloDXR/ParticleConstColor.ps.slang";
 static const char* kColorInterpPs = "Samples/HelloDXR/ParticleInterpColor.ps.slang";
 static const char* kTexturedPs = "Samples/HelloDXR/ParticleTexture.ps.slang";
+static const std::string kDefaultTexture = "smoke-puff.png";
 
 enum CustomTypeID
 {
@@ -60,6 +61,7 @@ namespace
         uint totaltime;
         uint partTime;
         float partPrecent;
+        uint aabbIdxCnt;
     };
 #endif
 };
@@ -165,6 +167,11 @@ void HelloDXR::onGuiRender(Gui* pGui)
 
 void HelloDXR::loadScene(const std::string& filename, const Fbo* pTargetFbo)
 {
+    mpTexture = Texture::createFromFile(kDefaultTexture, true, false);
+    Sampler::Desc samplerDesc;
+    samplerDesc.setFilterMode(Sampler::Filter::Linear, Sampler::Filter::Linear, Sampler::Filter::Linear);
+    mpLinearSampler = Sampler::create(samplerDesc);
+
     auto pNewSB = SceneBuilder::create(filename);
     mpSceneBuilder = pNewSB->copy();
     mpScene = pNewSB->getScene();
@@ -200,7 +207,7 @@ void HelloDXR::loadScene(const std::string& filename, const Fbo* pTargetFbo)
     rtProgDesc.setMaxTraceRecursionDepth(3); // 1 for calling TraceRay from RayGen, 1 for calling it from the primary-ray ClosestHitShader for reflections, 1 for reflection ray tracing a shadow ray
 
     rtProgDesc.setCompilerFlags(Shader::CompilerFlags::GenerateDebugInfo);
-    rtProgDesc.setCompilerFlags(Shader::CompilerFlags::DumpIntermediates);
+    //rtProgDesc.setCompilerFlags(Shader::CompilerFlags::DumpIntermediates);
 
     mpRaytraceProgram = RtProgram::create(rtProgDesc);
     mpRtVars = RtProgramVars::create(mpRaytraceProgram, mpScene);
@@ -227,6 +234,8 @@ void HelloDXR::setPerFrameVars(const Fbo* pTargetFbo)
     cb["tanHalfFovY"] = std::tan(fovY * 0.5f);
     cb["sampleIndex"] = mSampleIndex++;
     cb["useDOF"] = mUseDOF;
+    mpRtVars["gTex"] = mpTexture;
+    mpRtVars["gSampler"] = mpLinearSampler;
     mpRtVars->getRayGenVars()["gOutput"] = mpRtOut;
 }
 
@@ -430,12 +439,12 @@ bool HelloDXR::onKeyEvent(const KeyboardEvent& keyEvent)
         createParticleSystem(ExamplePixelShaders::ConstColor);
         createParticleSystem(ExamplePixelShaders::ConstColor);
         createParticleSystem(ExamplePixelShaders::ConstColor);
-        //mpCamera->setPosition(float3(-1.646739, 2.510957, 2.434580));
-        //mpCamera->setTarget(float3(-1.033757, 2.431306, 1.648509));
-        //mpCamera->setUpVector(float3(0,1,0));
-        mpCamera->setPosition(float3(-0.584588, 2.589808, 1.666172));
-        mpCamera->setTarget(float3(-0.036677, 2.358391, 0.862282));
+        mpCamera->setPosition(float3(-1.646739, 2.510957, 2.434580));
+        mpCamera->setTarget(float3(-1.033757, 2.431306, 1.648509));
         mpCamera->setUpVector(float3(0,1,0));
+        //mpCamera->setPosition(float3(-0.584588, 2.589808, 1.666172));
+        //mpCamera->setTarget(float3(-0.036677, 2.358391, 0.862282));
+        //mpCamera->setUpVector(float3(0,1,0));
         mbCreatePS = true;
         mbPS = false;
         mbUpdateAABB = true;
