@@ -388,7 +388,6 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
 #else
         mpRtVars->setBuffer("rotatePool", mpRotateBuffer);
 #endif
-        mpRtVars->setBuffer("directViewDirBuffer", mpDirViewBuffer);
 #ifdef _DEBUG
         mpRtVars->setBuffer("dBuffer", mpDBuffer);
 #endif
@@ -474,7 +473,6 @@ void HelloDXR::onResizeSwapChain(uint32_t width, uint32_t height)
     mpRtOut = Texture::create2D(width, height, ResourceFormat::RGBA16Float, 1, 1, nullptr, Resource::BindFlags::UnorderedAccess | Resource::BindFlags::ShaderResource);
     if (mpRaytraceProgram)
     {
-        mpDirViewBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "directViewDirBuffer", height * width, ResourceBindFlags::UnorderedAccess);
 #ifdef _DEBUG
         mpDBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "dBuffer", height * width, ResourceBindFlags::UnorderedAccess);
 #endif

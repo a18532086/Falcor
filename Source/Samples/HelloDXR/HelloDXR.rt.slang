@@ -61,13 +61,7 @@ struct Range{
     uint size;
 }
 
-struct AHS_RGS_Payload_t{
-    uint cnt;
-    uint idx[MAX_AABB_CNT_PERRAY];
-}
-
 StructuredBuffer<float> rotatePool;
-RWStructuredBuffer<AHS_RGS_Payload_t> directViewDirBuffer : register(u3);
 #ifdef _DEBUG
 RWStructuredBuffer<DebugInfo> dBuffer : register(u4);
 #endif
@@ -179,8 +173,7 @@ float3 getReflectionColor(float3 worldOrigin, VertexData v, float3 worldRayDir, 
         RayDesc ray;
         ray.Origin = worldOrigin;
         ray.Direction = reflect(worldRayDir, v.normalW);
-        float3 lastViewDir = float3(0.0);//directViewDirBuffer[getDispatchIndex()];
-        //directViewDirBuffer[getDispatchIndex()] = reflect(lastViewDir, v.normalW);
+        float3 lastViewDir = float3(0.0);
         ray.TMin = 0.001;
         ray.TMax = 100000;
         TraceRay(gRtScene, 0 /*rayFlags*/, 0xFF, 0 /* ray index*/, hitProgramCount, 0, ray, secondaryRay);
@@ -317,7 +310,6 @@ void rayGen(
 
     PrimaryRayData hitData;
     hitData.depth = 0;
-    //directViewDirBuffer[getDispatchIndex()] = getCameraViewDir();
     TraceRay(gRtScene, 0 /*rayFlags*/, 0xFF, 0 /* ray index*/, hitProgramCount, 0, ray, hitData);
     gOutput[launchIndex.xy] = hitData.color;
 }
@@ -360,7 +352,6 @@ float3 dealWithSpriteAndBlend(float3 vDir, RayDesc ray, ScatterRayData rayData, 
 
     float3x3 rotWorld2View = getNewBasisMat(right,up,viewDir);
 
-    // AHS_RGS_Payload_t RGS_info = directViewDirBuffer[getDispatchIndex()];
     ScatterRayData RGS_info = rayData;
 
 
@@ -496,8 +487,6 @@ void updateRayState(VertexData v, ShadingData sd, ScatterRayData rayData, bool i
     RayDesc tmpRay;
     tmpRay.Origin = ray.Origin + ray.Direction * rayData.hitT;
     tmpRay.Direction = reflect(ray.Direction, v.normalW);
-    // float3 lastViewDir = directViewDirBuffer[getDispatchIndex()];
-    // directViewDirBuffer[getDispatchIndex()] = reflect(lastViewDir, v.normalW);
     vDir = reflect(vDir, v.normalW);
     tmpRay.TMin = 0.001;
     tmpRay.TMax = 100000;
@@ -534,7 +523,6 @@ void rayGenIR(
         VertexData v;
         rayData.packedHitInfo = { HitInfo::kInvalidIndex };
         rayData.aabbHitCnt = 0;
-        directViewDirBuffer[getDispatchIndex()].cnt = 0;
         TraceRay(gRtScene, 0 /*rayFlags*/, 0xFF, 0 /* ray index*/, hitProgramCount, 0, ray, rayData);
         bool bShouldUpdateState = false;
         if (rayData.packedHitInfo.x != HitInfo::kInvalidIndex){
@@ -622,7 +610,7 @@ float3 getOrthoVector(float3 vec){
 //     float3 center = aabbData.center();
 //     float radius = aabbData.extent().x * 0.25 * sqrt(2.0); // * 0.5 / sqrt2
 
-//     float3 viewDir = float3(0.0);//directViewDirBuffer[getDispatchIndex()];
+//     float3 viewDir = float3(0.0);
 
 //     float3 right = normalize(getOrthoVector(viewDir));
 
@@ -692,7 +680,7 @@ void spriteEmitterAABBIntersection(uniform HitShaderParams hitParams)
 
     uint IdxEnd = range.size + range.offset;
 
-    float3 viewDir = float3(0);// directViewDirBuffer[getDispatchIndex()];
+    float3 viewDir = float3(0);
 
     float3 right = normalize(getOrthoVector(viewDir));
 

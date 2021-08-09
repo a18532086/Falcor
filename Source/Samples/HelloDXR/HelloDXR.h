@@ -96,7 +96,6 @@ private:
     std::vector<PixelShaderData> mPsData;
     std::vector<Texture::SharedPtr> mpTextures;
     Buffer::SharedPtr mpRotateBuffer;
-    Buffer::SharedPtr mpDirViewBuffer;
     Buffer::SharedPtr mpRangeBuffer;
     GpuTimer::SharedPtr mpTimer;
     Texture::SharedPtr mpTexture;
