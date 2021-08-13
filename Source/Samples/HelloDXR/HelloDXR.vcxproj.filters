@@ -12,5 +12,8 @@
     <ShaderSource Include="ParticleConstColor.ps.slang" />
     <ShaderSource Include="ParticleInterpColor.ps.slang" />
     <ShaderSource Include="ParticleTexture.ps.slang" />
+    <ShaderSource Include="Blend.cs.slang" />
+    <ShaderSource Include="RayData.slangh" />
+    <ShaderSource Include="BlitUnormToRT.cs.slang" />
   </ItemGroup>
 </Project>

@@ -30,47 +30,7 @@ import Scene.Shading;
 import Scene.Raytracing;
 import Utils.Helpers;
 import Scene.HitInfo;
-import Utils.Timing.GpuTimer;
-
-#ifndef MAX_AABB_CNT_PERRAY
-#define MAX_AABB_CNT_PERRAY 10
-#endif
-
-#ifndef MAX_OIT_CNT_PERRAY
-#define MAX_OIT_CNT_PERRAY 4
-#endif
-
-#ifdef _DEBUG
-struct DebugInfo{
-    uint totaltime;
-    uint partTime;
-    float partPrecent;
-    uint aabbIdxCnt;
-};
-#endif
-
-struct Particle{
-    float3 center;
-    float scale;
-    float cosRot;
-    float sinRot;
-}
-
-struct Range{
-    uint offset;
-    uint size;
-}
-
-StructuredBuffer<float> rotatePool;
-#ifdef _DEBUG
-RWStructuredBuffer<DebugInfo> dBuffer : register(u4);
-#endif
-StructuredBuffer<Particle> particlePool;
-StructuredBuffer<Range> particleSystemRanges;
-SamplerState gSampler;
-Texture2D gTex;
-
-static const int kSpriteHitKind = 0x01;
+#include "RayData.slangh"
 
 cbuffer PerFrameCB
 {
@@ -79,7 +39,25 @@ cbuffer PerFrameCB
     float tanHalfFovY;
     uint sampleIndex;
     bool useDOF;
+    //uint gDispatchX;
     //uint numParticleSystemsCount;
+};
+
+StructuredBuffer<float> rotatePool;
+RWStructuredBuffer<RGS2CS_t> RGS2CSBuffer : register(u3);
+#ifdef _DEBUG
+RWStructuredBuffer<DebugInfo> dBuffer : register(u4);
+#endif
+StructuredBuffer<Particle> particlePool;
+StructuredBuffer<Range> particleSystemRanges;
+SamplerState gSampler;
+Texture2D gTex;
+
+struct ScatterRayData
+{
+    PackedHitInfo packedHitInfo;        ///< Packed HitInfo data, or kInvalidIndex in the first component if ray missed.
+    uint hitKind;
+    PackedSpriteHitInfo sHitInfo;
 };
 
 struct PrimaryRayData
@@ -97,15 +75,7 @@ struct ShadowRayData
 /** Payload for scatter ray.
 */
 
-struct ScatterRayData
-{
-    PackedHitInfo packedHitInfo;        ///< Packed HitInfo data, or kInvalidIndex in the first component if ray missed.
-    uint hitKind;
-    float hitT;
-    uint aabbHitCnt;
-    uint aabbIdx[MAX_AABB_CNT_PERRAY];
-};
-
+static const int kSpriteHitKind = 0x01;
 
 
 [shader("miss")]
@@ -138,7 +108,10 @@ void primaryMiss(inout PrimaryRayData hitData)
 void primaryMissIR(inout ScatterRayData rayData : SV_RayPayload)
 {
     rayData.packedHitInfo.x = HitInfo::kInvalidIndex;
-    rayData.hitT = -1;
+    SpriteRayHitInfo tmp;
+    tmp.decode(rayData.sHitInfo);
+    tmp.hitT = -1;
+    tmp.packTo(rayData.sHitInfo);
 }
 
 bool checkLightHit(uint lightIndex, float3 origin)
@@ -244,7 +217,10 @@ void primaryClosestHitIR(
     hit.barycentrics = attribs.barycentrics;
     rayData.packedHitInfo = hit.encode();
     rayData.hitKind = HitKind();
-    rayData.hitT = RayTCurrent();
+    SpriteRayHitInfo tmp;
+    tmp.decode(rayData.sHitInfo);
+    tmp.hitT = RayTCurrent();
+    tmp.packTo(rayData.sHitInfo);
 }
 [shader("anyhit")]
 void primaryAnyHit(
@@ -267,26 +243,26 @@ void primaryAnyHitIR(
     inout ScatterRayData rayData : SV_RayPayload,
     BuiltInTriangleIntersectionAttributes   attribs)
 {
-    ScatterRayData tmp = rayData;
+    SpriteRayHitInfo tmp;
+    tmp.decode(rayData.sHitInfo);
     if (HitKind() == kSpriteHitKind){
-
         if (tmp.aabbHitCnt < MAX_AABB_CNT_PERRAY){
             uint idx = tmp.aabbHitCnt++;
             tmp.aabbIdx[idx] = asuint(attribs.barycentrics.x);
         }
-        rayData = tmp;
+        tmp.packTo(rayData.sHitInfo);
         IgnoreHit();
     }
     else{
         // Alpha test for non-opaque geometry.
         VertexData v = getVertexData(hitParams, PrimitiveIndex(), attribs);
         uint materialID = gScene.getMaterialID(hitParams.getGlobalHitID());
-        rayData = tmp;
         if (alphaTest(v, gScene.materials[materialID], gScene.materialResources[materialID], 0.f))
         {
             IgnoreHit();
         }
     }
+
 
 }
 
@@ -314,178 +290,21 @@ void rayGen(
     gOutput[launchIndex.xy] = hitData.color;
 }
 
-float4 proceduralTexture(float2 UV){
-    return gTex.SampleLevel(gSampler, UV, 0.0);
-}
-
-struct HitPoint{
-    float3 p;
-    float t;
-    float hitT;
-}
-
-float3 dealWithSpriteAndBlend(float3 vDir, RayDesc ray, ScatterRayData rayData, float3 color){
-
-#ifdef _DEBUG
-    GpuTimer totTimer, partTimer;
-    uint partTimeacc = 0;
-    totTimer.start();
-#endif
-
-    HitPoint arrayHitT[MAX_OIT_CNT_PERRAY + 1];
-
-    float tMax = rayData.packedHitInfo.x == HitInfo::kInvalidIndex ?  100000 : rayData.hitT;
-
-    for (uint i = 0; i < MAX_OIT_CNT_PERRAY + 1; ++i){
-        arrayHitT[i].hitT = tMax;
-        arrayHitT[i].p = float3(0);
-        arrayHitT[i].t = 1;
-    }
-
-    uint nowMaxIdx = 0;
-
-    float3 viewDir = vDir;
-
-    float3 right = normalize(getOrthoVector(viewDir));
-
-    float3 up = cross(viewDir,right);
-
-    float3x3 rotWorld2View = getNewBasisMat(right,up,viewDir);
-
-    ScatterRayData RGS_info = rayData;
-
-
-    // To avoid flicker, sort AABBs by ID
-    for (uint i = 0; i < RGS_info.aabbHitCnt; ++i){
-        for (uint j = i + 1; j < RGS_info.aabbHitCnt; ++j){
-            if (RGS_info.aabbIdx[i] > RGS_info.aabbIdx[j]){
-                uint tmp = RGS_info.aabbIdx[i];
-                RGS_info.aabbIdx[i] = RGS_info.aabbIdx[j];
-                RGS_info.aabbIdx[j] = tmp;
-            }
-        }
-    }
-
-    for (uint psIdx = 0; psIdx < RGS_info.aabbHitCnt; ++psIdx){
-        uint gIdx = RGS_info.aabbIdx[psIdx];
-
-        //
-
-        float3 rayOrigW = ray.Origin;
-        float3 rayDirW = ray.Direction;
-
-
-        Range range = particleSystemRanges[gIdx];
-
-        uint IdxEnd = range.size + range.offset;
-
-        bool isHit = false;
-
-        float2 hitUV = float2(0.0);
-
-        for (uint particle_ID = range.offset; particle_ID < IdxEnd; ++particle_ID){
-            Particle pd = particlePool[particle_ID];
-            //float rot = pd.rotate;
-
-            // float cosTheta = cos(rot);
-            // float sinTheta = sin(rot);
-
-            float3 center = pd.center;
-            float radius = pd.scale;
-
-            // float4x4 translateMat = getTranslateMat(-center);
-            // float4x4 rotAroundZ = float4x4(float4(cosTheta, sinTheta,0,0), float4(-sinTheta, cosTheta, 0, 0), float4(0, 0, 1, 0), float4(0, 0, 0, 1));
-            // float4x4 worldToSpriteLocalMat = mul(rotAroundZ, mul(float4x4(float4(rotWorld2View[0],0),float4(rotWorld2View[1],0),float4(rotWorld2View[2],0),float4(0,0,0,1)), translateMat));
-
-            float3 rotRayDir = rotateAroundZ(mul(rotWorld2View ,rayDirW), pd.cosRot, pd.sinRot);
-            float3 rotRayOrig = rotateAroundZ(mul(rotWorld2View ,rayOrigW - center), pd.cosRot, pd.sinRot);
-            // float4 rotRayDir = mul(worldToSpriteLocalMat ,float4(rayDirW,0));
-            // float4 rotRayOrig = mul(worldToSpriteLocalMat ,float4(rayOrigW,1));
-
-            if (abs(rotRayDir.z) > 1e-3){
-
-                float nowHitT = - rotRayOrig.z / rotRayDir.z;
-                float2 nowHitP = (rotRayOrig + nowHitT * rotRayDir).xy;
-
-                float2 UV = nowHitP / float2(radius);
-
-                if (nowHitT >= ray.TMin && nowHitT < tMax && all(abs(UV) < float2(1.0))){
-                    UV = UV * float2(0.5) + float2(0.5);
-                    isHit = true;
-                    hitUV = UV;
-                    // float4 spriteColor = float4((gIdx & 2) >> 1, gIdx & 1, gIdx & 1, 0.5);
-                    float4 spriteColor = proceduralTexture(UV);
-                    //HitPoint lastVal = {spriteColor.rgb * spriteColor.a, 1 - spriteColor.a, nowHitT};
-                    HitPoint lastVal;
-                    lastVal.p = spriteColor.rgb * spriteColor.a;
-                    lastVal.t = 1.0 - spriteColor.a;
-                    lastVal.hitT = nowHitT;
-#ifdef _DEBUG
-                partTimer.start();
-#endif
-                    for (uint i = 0;i < nowMaxIdx + 1; ++i){
-                        if (arrayHitT[i].hitT > nowHitT){
-                            HitPoint tmp = lastVal;
-                            lastVal = arrayHitT[i];
-                            arrayHitT[i] = tmp;
-                        }
-                    }
-#ifdef _DEBUG
-                    partTimeacc += partTimer.getElapsed();
-#endif
-                    if (nowMaxIdx == MAX_OIT_CNT_PERRAY){
-                        HitPoint merge;
-                        merge.p = arrayHitT[MAX_OIT_CNT_PERRAY - 1].p + (arrayHitT[MAX_OIT_CNT_PERRAY].p * arrayHitT[MAX_OIT_CNT_PERRAY - 1].t);
-                        merge.t = arrayHitT[MAX_OIT_CNT_PERRAY - 1].t * arrayHitT[MAX_OIT_CNT_PERRAY].t;
-                        merge.hitT = arrayHitT[MAX_OIT_CNT_PERRAY - 1].hitT;
-                        arrayHitT[MAX_OIT_CNT_PERRAY - 1] = merge;
-                    }
-                    else{
-                        ++nowMaxIdx;
-                    }
-
-                    
-                }
-
-            }
-        }
-    }
-
-    for (uint i = 0;i < nowMaxIdx; ++i){
-        uint idx = nowMaxIdx - i - 1;
-        color = arrayHitT[idx].p + (color * arrayHitT[idx].t);
-    }
-#ifdef _DEBUG
-    uint totTime = totTimer.getElapsed();
-    float precent = totTime == 0 ? 0 : 1.0 * partTimeacc / totTime;
-    DebugInfo dbinfo = {
-        totTime,
-        partTimeacc,
-        precent,
-        rayData.aabbHitCnt,
-    };
-
-    dBuffer[getDispatchIndex()] = dbinfo;
-#endif
-
-    return color;
-}
-
-void updateRayState(VertexData v, ShadingData sd, ScatterRayData rayData, bool isPrimaryRay, inout float3 specularCoefficient, inout RayDesc ray, inout float3 vDir){
+void updateRayState(VertexData v, ShadingData sd, float hitT, bool isPrimaryRay, inout float3 specularCoefficient, inout RayDesc ray, inout float3 vDir){
     // A very non-PBR inaccurate way to do reflections
     float alpha = min(0.5, max(1e-8, sd.ggxAlpha));
 
     // if not primary ray, calc the falloff of coef
     if (!isPrimaryRay){
-        specularCoefficient = rayData.hitT == -1 ? 0 : specularCoefficient;
-        float falloff = max(1, (rayData.hitT * rayData.hitT));
+        specularCoefficient = hitT == -1 ? 0 : specularCoefficient;
+        float falloff = max(1, (hitT * hitT));
         specularCoefficient *= 20 / falloff;
     }
     specularCoefficient *= sd.specular * (alpha * alpha);
 
     // reflection
     RayDesc tmpRay;
-    tmpRay.Origin = ray.Origin + ray.Direction * rayData.hitT;
+    tmpRay.Origin = ray.Origin + ray.Direction * hitT;
     tmpRay.Direction = reflect(ray.Direction, v.normalW);
     vDir = reflect(vDir, v.normalW);
     tmpRay.TMin = 0.001;
@@ -513,17 +332,20 @@ void rayGenIR(
 
     ScatterRayData rayData;
     float3 vDir = getCameraViewDir();
-    const uint maxDepth = 2;
     float4 accColor = float4(0.0,0.0,0.0,1.0);
     float3 specularCoefficient = float3(1.0);
     float3 color = 0.0;
+    PackedSpriteHitInfo clearPSHitInfo;
+    getNullPackedSpriteHitInfo(clearPSHitInfo);
 
-    for (uint depth = 0; depth < maxDepth; ++depth){
+    for (uint depth = 0; depth < MAX_DEPTH; ++depth){
         ShadingData sd;
         VertexData v;
         rayData.packedHitInfo = { HitInfo::kInvalidIndex };
-        rayData.aabbHitCnt = 0;
+        rayData.sHitInfo = clearPSHitInfo;
         TraceRay(gRtScene, 0 /*rayFlags*/, 0xFF, 0 /* ray index*/, hitProgramCount, 0, ray, rayData);
+        SpriteRayHitInfo SRHitInfo;
+        SRHitInfo.decode(rayData.sHitInfo);
         bool bShouldUpdateState = false;
         if (rayData.packedHitInfo.x != HitInfo::kInvalidIndex){
             bShouldUpdateState = true;
@@ -536,7 +358,95 @@ void rayGenIR(
 
             color = float3(0);
 
-            float3 posW = ray.Origin + ray.Direction * rayData.hitT;
+            float3 posW = ray.Origin + ray.Direction * SRHitInfo.hitT;
+
+            if (rayData.hitKind == kSpriteHitKind){
+                color = float3(0,0,1);
+                bShouldUpdateState = false;
+            }
+            else{
+                for (int i = 0; i < gScene.getLightCount(); i++)
+                {
+                    if (checkLightHit(i, posW) == false)
+                    {
+                        color += evalMaterial(sd, gScene.getLight(i), 1).color;
+                    }
+                }
+            }
+            color += sd.emissive;
+
+        }
+        else{
+            color = float3(0.01);
+        }
+
+        color = dealWithSpriteAndBlend(vDir, ray, SRHitInfo, color, gTex, gSampler, particlePool, particleSystemRanges, getDispatchIndex());
+        color *= specularCoefficient;
+
+        accColor.rgb += color;
+
+        if (bShouldUpdateState){
+            updateRayState(v, sd, SRHitInfo.hitT, depth == 0, specularCoefficient, ray, vDir);
+        }
+        else{
+            break;
+        }
+
+    }
+
+    gOutput[launchIndex.xy] = accColor;
+}
+
+[shader("raygeneration")]
+void rayGenIR2CS(uniform RWTexture2D<float4> gOutput)
+{
+    uint3 launchIndex = DispatchRaysIndex();
+    uint randSeed = rand_init(launchIndex.x + launchIndex.y * viewportDims.x, sampleIndex, 16);
+
+    RayDesc ray;
+    if (!useDOF)
+    {
+        ray = gScene.camera.computeRayPinhole(launchIndex.xy, viewportDims).toRayDesc();
+    }
+    else
+    {
+        float2 u = float2(rand_next(randSeed), rand_next(randSeed));
+        ray = gScene.camera.computeRayThinlens(launchIndex.xy, viewportDims, u).toRayDesc();
+    }
+
+    ScatterRayData rayData;
+    float3 vDir = getCameraViewDir();
+    float4 accColor = float4(0.0,0.0,0.0,1.0);
+    float3 specularCoefficient = float3(1.0);
+    float3 color = 0.0;
+    PackedSpriteHitInfo clearPSHitInfo;
+    getNullPackedSpriteHitInfo(clearPSHitInfo);
+    RGS2CS_t oData2CS[MAX_DEPTH];
+    for(uint i = 0; i < MAX_DEPTH; ++i){
+        oData2CS[i].needBlend = false;
+    }
+
+    for (uint depth = 0; depth < MAX_DEPTH; ++depth){
+        ShadingData sd;
+        VertexData v;
+        rayData.packedHitInfo = { HitInfo::kInvalidIndex };
+        rayData.sHitInfo = clearPSHitInfo;
+        TraceRay(gRtScene, 0 /*rayFlags*/, 0xFF, 0 /* ray index*/, hitProgramCount, 0, ray, rayData);
+        SpriteRayHitInfo SRHitInfo;
+        SRHitInfo.decode(rayData.sHitInfo);
+        bool bShouldUpdateState = false;
+        if (rayData.packedHitInfo.x != HitInfo::kInvalidIndex){
+            bShouldUpdateState = true;
+            HitInfo tmpHit;
+            tmpHit.decode(rayData.packedHitInfo);
+            v = gScene.getVertexData(tmpHit);
+            //
+            uint materialID = gScene.getMaterialID(tmpHit.instanceID);
+            sd = prepareShadingData(v, materialID, gScene.materials[materialID], gScene.materialResources[materialID], -ray.Direction, 0);
+
+            color = float3(0);
+
+            float3 posW = ray.Origin + ray.Direction * SRHitInfo.hitT;
 
             if (rayData.hitKind == kSpriteHitKind){
                 color = float3(0,0,1);
@@ -553,29 +463,37 @@ void rayGenIR(
             }
 
             color += sd.emissive;
-            color *= specularCoefficient;
 
             accColor.rgb += color;
         }
         else{
-            color = specularCoefficient * float3(0.01);
+            color = float3(0.01);
         }
 
-        color = dealWithSpriteAndBlend(vDir, ray, rayData, color);
+        // color = dealWithSpriteAndBlend(vDir, ray, rayData, color);
 
-        
-        accColor.rgb += color;
+        // accColor.rgb += color;
+
+        RGS2CS_t output;
+        output.needBlend = true;
+        output.vDir = vDir;
+        output.ray = ray;
+        output.packedSHitInfo = rayData.sHitInfo;
+        output.color = color;
+        output.specularCoefficient = specularCoefficient;
+
+        oData2CS[depth] = output;
 
         if (bShouldUpdateState){
-            updateRayState(v, sd, rayData, depth == 0, specularCoefficient, ray, vDir);
+            updateRayState(v, sd, SRHitInfo.hitT, depth == 0, specularCoefficient, ray, vDir);
         }
         else{
             break;
         }
-
     }
-
-    gOutput[launchIndex.xy] = accColor;
+    for (uint depth = 0; depth < MAX_DEPTH; ++depth){
+        RGS2CSBuffer[MAX_DEPTH * getDispatchIndex() + depth] = oData2CS[depth];
+    }
 }
 
 
@@ -583,18 +501,6 @@ struct SpriteIntersectionAttributes
 {
     float2 UV;
 };
-
-float4x4 getTranslateMat(float3 offset){
-    return float4x4(float4(1, 0, 0, offset.x), float4(0, 1, 0, offset.y), float4(0, 0, 1, offset.z), float4(0, 0, 0, 1));
-}
-
-float3x3 getNewBasisMat(float3 x,float3 y, float3 z){
-    return float3x3(x,y,z);
-}
-
-float3 getOrthoVector(float3 vec){
-    return cross(vec,float3(0, 1, 0));
-}
 
 // [shader("intersection")]
 // void spriteIntersection(uniform HitShaderParams hitParams)
@@ -734,8 +640,4 @@ void spriteEmitterAABBIntersectionSimple(uniform HitShaderParams hitParams)
     attr.barycentrics.x = asfloat(hitParams.geometryIndex);
     ReportHit(RayTCurrent(), kSpriteHitKind, attr);
     
-}
-
-float3 rotateAroundZ(float3 vec,float c,float s){
-    return float3(vec.x * c - vec.y * s, vec.x * s + vec.y * c, vec.z);
 }

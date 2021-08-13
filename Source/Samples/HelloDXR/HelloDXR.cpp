@@ -23,7 +23,7 @@ S # PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
 #include "HelloDXR.h"
 #define USE_EMITTER_AABB
 
-static const float4 kClearColor(0.38f, 0.52f, 0.10f, 1);
+static const float4 kClearColor(0.f, 0.f, 0.f, 1.f);
 static const std::string kDefaultScene = "Arcade/Arcade_Wall.pyscene";
 static const Gui::DropdownList kPixelShaders
 {
@@ -76,12 +76,11 @@ void HelloDXR::createParticleSystem(ExamplePixelShaders shadertype)
     }
 #if defined(USE_EMITTER_AABB)
     mpRotateBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "particlePool", particleMaxSize);
+    mpRangeBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "particleSystemRanges", static_cast<uint32_t>(mpParticleSystems.size()) + 1);
+    mpCSVars->setBuffer("particlePool", mpRotateBuffer);
+    mpCSVars->setBuffer("particleSystemRanges", mpRangeBuffer);
 #else
     mpRotateBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "rotatePool", particleMaxSize);
-#endif
-
-#if defined(USE_EMITTER_AABB)
-    mpRangeBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "particleSystemRanges", static_cast<uint32_t>(mpParticleSystems.size()) + 1);
 #endif
 
     auto pContext = gpDevice->getRenderContext();
@@ -190,7 +189,7 @@ void HelloDXR::loadScene(const std::string& filename, const Fbo* pTargetFbo)
     mpRasterPass = RasterScenePass::create(mpScene, "Samples/HelloDXR/HelloDXR.ps.slang", "", "main");
 
     RtProgram::Desc rtProgDesc;
-    rtProgDesc.addShaderLibrary("Samples/HelloDXR/HelloDXR.rt.slang").setRayGen("rayGenIR");
+    rtProgDesc.addShaderLibrary("Samples/HelloDXR/HelloDXR.rt.slang").setRayGen("rayGenIR2CS");
     rtProgDesc.addHitGroup(0, "primaryClosestHitIR", "primaryAnyHitIR").addMiss(0, "primaryMissIR");
     rtProgDesc.addHitGroup(1, "", "shadowAnyHit").addMiss(1, "shadowMiss");
     rtProgDesc.addAABBHitGroup(0, "primaryClosestHitIR", "primaryAnyHitIR");
@@ -209,8 +208,24 @@ void HelloDXR::loadScene(const std::string& filename, const Fbo* pTargetFbo)
     rtProgDesc.setCompilerFlags(Shader::CompilerFlags::GenerateDebugInfo);
     //rtProgDesc.setCompilerFlags(Shader::CompilerFlags::DumpIntermediates);
 
+    ComputeProgram::Desc csProgDesc;
+    csProgDesc.addShaderLibrary("Samples/HelloDXR/Blend.cs.slang");
+    csProgDesc.csEntry("doBlendCS");
+    csProgDesc.setCompilerFlags(Shader::CompilerFlags::GenerateDebugInfo);
+
     mpRaytraceProgram = RtProgram::create(rtProgDesc);
+    mpCSProgram = ComputeProgram::create(csProgDesc);
+#ifdef _DEBUG
+    mpCSProgram->addDefine("_DEBUG", "1");
+#endif
+    ComputeProgram::Desc blitProgDesc;
+    blitProgDesc.addShaderLibrary("Samples/HelloDXR/BlitUnormToRT.cs.slang");
+    blitProgDesc.csEntry("main");
+    blitProgDesc.setCompilerFlags(Shader::CompilerFlags::GenerateDebugInfo);
+    mpBlitProgram = ComputeProgram::create(blitProgDesc);
     mpRtVars = RtProgramVars::create(mpRaytraceProgram, mpScene);
+    mpCSVars = ComputeVars::create(mpCSProgram.get());
+    mpBlitVars = ComputeVars::create(mpBlitProgram.get());
     mpRaytraceProgram->setScene(mpScene);
 }
 
@@ -237,6 +252,11 @@ void HelloDXR::setPerFrameVars(const Fbo* pTargetFbo)
     mpRtVars["gTex"] = mpTexture;
     mpRtVars["gSampler"] = mpLinearSampler;
     mpRtVars->getRayGenVars()["gOutput"] = mpRtOut;
+
+    mpCSVars["gTex"] = mpTexture;
+    mpCSVars["gSampler"] = mpLinearSampler;
+
+
 }
 
 void HelloDXR::renderRT(RenderContext* pContext, const Fbo* pTargetFbo)
@@ -245,6 +265,9 @@ void HelloDXR::renderRT(RenderContext* pContext, const Fbo* pTargetFbo)
     setPerFrameVars(pTargetFbo);
 
     pContext->clearUAV(mpRtOut->getUAV().get(), kClearColor);
+    //std::vector<byte> vc(mpUonrmRTBuffer->getSize(),0);
+    //mpUonrmRTBuffer->setBlob(vc.data(), 0, vc.size());
+    pContext->copyBufferRegion(mpUonrmRTBuffer.get(), 0, mpUonrmRTClearBuffer.get(), 0, mpUonrmRTBuffer->getSize());
     if (mpTimer == nullptr)
     {
         mpTimer = GpuTimer::create();
@@ -253,7 +276,8 @@ void HelloDXR::renderRT(RenderContext* pContext, const Fbo* pTargetFbo)
     mpScene->raytrace(pContext, mpRaytraceProgram.get(), mpRtVars, uint3(pTargetFbo->getWidth(), pTargetFbo->getHeight(), 1));
     mpTimer->end();
     mRTTime = mpTimer->getElapsedTime();
-
+    mpCSProgram->dispatchCompute(pContext, mpCSVars.get(), uint3(mWidth / 16 , mHeight * 2 /16, 1));
+    mpBlitProgram->dispatchCompute(pContext, mpBlitVars.get(), uint3(mWidth / 32 , mHeight / 8, 1));
     pContext->blit(mpRtOut->getSRV(), pTargetFbo->getRenderTargetView(0));
 }
 
@@ -335,39 +359,6 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
     {
         mbCreatePS = false;
     }
-#ifdef _DEBUG
-    if (mpDBuffer)
-    {
-
-        DebugInfo* dbInfos = static_cast<DebugInfo*>(mpDBuffer->map(Buffer::MapType::Read));
-        size_t dbinfoSize = mpDBuffer->getSize() / sizeof(DebugInfo);
-        mMaxPrecent = 0.0;
-        for (size_t i = 0; i < dbinfoSize; ++i)
-        {
-            if (i  == 319343)
-            {
-                mMaxPrecent = dbInfos[i].partPrecent;
-                mMaxTotTime = dbInfos[i].totaltime;
-                mMaxPartTime = dbInfos[i].partTime;
-            }
-        }
-        static uint frameCnt = 0;
-        static double totPrecent = 0.0;
-        static uint totTotTime = 0;
-        static uint totPartTime = 0;
-        if (mMaxPrecent > 0.0)
-        {
-            frameCnt += 1;
-            totPrecent += mMaxPrecent;
-            totTotTime += mMaxTotTime;
-            totPartTime += mMaxPartTime;
-            mMaxPrecent = totPrecent / frameCnt * 100.0;
-            mMaxTotTime = totTotTime / frameCnt;
-            mMaxPartTime = totPartTime / frameCnt;
-        }
-
-    }
-#endif
 
     if (bshouldUpdateAABB)
     {
@@ -385,6 +376,7 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
         }
         mpRtVars->setBuffer("particleSystemRanges", mpRangeBuffer);
         mpRtVars->setBuffer("particlePool", mpRotateBuffer);
+        mpRtVars->setBuffer("RGS2CSBuffer", mpRGS2CSBuffer);
 #else
         mpRtVars->setBuffer("rotatePool", mpRotateBuffer);
 #endif
@@ -463,6 +455,9 @@ void HelloDXR::onResizeSwapChain(uint32_t width, uint32_t height)
     float h = (float)height;
     float w = (float)width;
 
+    mWidth = width;
+    mHeight = height;
+
     if (mpCamera)
     {
         mpCamera->setFocalLength(18);
@@ -477,11 +472,162 @@ void HelloDXR::onResizeSwapChain(uint32_t width, uint32_t height)
         mpDBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "dBuffer", height * width, ResourceBindFlags::UnorderedAccess);
 #endif
     }
+    if (mpCSProgram)
+    {
+        mpLockBuffer = Buffer::createStructured(mpCSProgram.get(), "lockBuffer", height * width, ResourceBindFlags::UnorderedAccess);
+        mpRGS2CSBuffer = Buffer::createStructured(mpCSProgram.get(), "RGS2CSBuffer", height * width * 2, ResourceBindFlags::UnorderedAccess);
+        mpUonrmRTBuffer = Buffer::createStructured(mpCSProgram.get(), "unormFBO", height * width * 2 * 3, ResourceBindFlags::UnorderedAccess);
+        std::vector<char> vClear(mpUonrmRTBuffer->getSize(), 0);
+        mpUonrmRTClearBuffer = Buffer::create(mpUonrmRTBuffer->getSize(), ResourceBindFlags::None, Buffer::CpuAccess::None,vClear.data());
+        mpCSVars->setBuffer("lockBuffer", mpLockBuffer);
+        mpCSVars->setBuffer("RGS2CSBuffer", mpRGS2CSBuffer);
+        mpCSVars->setBuffer("unormFBO", mpUonrmRTBuffer);
+        mpCSVars["CSCB"]["gDispatchX"] = mWidth;
+#ifdef _DEBUG
+        mpCSVars->setBuffer("dBuffer", mpDBuffer);
+#endif
+    }
+
+    if (mpBlitProgram)
+    {
+        mpBlitVars->setBuffer("unormFBO", mpUonrmRTBuffer);
+        mpBlitVars->setTexture("gOutput", mpRtOut);
+
+        mpBlitVars["CSCB"]["gDispatchX"] = mWidth;
+    }
 
 }
 
+
+#ifndef MAX_AABB_CNT_PERRAY
+#define MAX_AABB_CNT_PERRAY 16
+#endif
+
+#ifndef AABB_CNT_MSB
+#define AABB_CNT_MSB 4
+#endif
+
+#ifndef MAX_AABB_IDX_CNT
+#define MAX_AABB_IDX_CNT 256
+#endif
+
+#ifndef AABB_IDX_MSB
+#define AABB_IDX_MSB 8
+#endif
+
+#ifndef MAX_OIT_CNT_PERRAY
+#define MAX_OIT_CNT_PERRAY 4
+#endif
+
+#ifndef SPRITE_HITINFO_BIT_SIZE
+#define SPRITE_HITINFO_BIT_SIZE (32 + AABB_CNT_MSB + AABB_IDX_MSB * MAX_AABB_CNT_PERRAY)
+/* float + aabbHitCnt + aabbIdx[MAX_AABB_CNT_PERRAY] */
+#endif
+
+#ifndef SPRITE_PACKED_HITINFO_SIZE
+#define SPRITE_PACKED_HITINFO_SIZE ((SPRITE_HITINFO_BIT_SIZE-1)/128+1)
+#endif
+
+typedef std::array<uint4, SPRITE_PACKED_HITINFO_SIZE> PackedSpriteHitInfo;
+
+uint getOrVal(uint val, uint bitStride, uint offset) {
+    uint mask = bitStride == 32 ? 0xffffffff : ((1 << bitStride) - 1);
+    return (val & mask) << offset;
+}
+
+
+struct SpriteRayHitInfo {
+    float hitT;
+    uint aabbHitCnt;
+    uint aabbIdx[MAX_AABB_CNT_PERRAY];
+    static void setPackedSpriteHitInfo(PackedSpriteHitInfo& packInfo, uint& offset, uint stride, uint val) {
+        static const uint kElementSize = 128;
+        static const uint kElementSizeMask = 127;
+        static const uint kElementSizeBit = 7;
+        static const uint kComponent = 32;
+        static const uint kComponentMask = 31;
+        static const uint kComponentBit = 5;
+        static const uint kFullBit = ~0;
+        uint mask = getOrVal(kFullBit, stride, offset & kComponentMask);
+        uint orVal = getOrVal(val, stride, offset & kComponentMask);
+        uint fIdx = offset >> kElementSizeBit;
+        uint sIdx = offset >> kComponentBit & 0x03;
+        int elementRedundancyBit = ((offset & kElementSizeMask) + stride) - kElementSize;
+        int componentRedundancyBit = ((offset & kComponentMask) + stride) - kComponent;
+        packInfo[fIdx][sIdx] &= ~mask;
+        packInfo[fIdx][sIdx] |= orVal;
+        if (elementRedundancyBit > 0) {
+            mask = getOrVal(kFullBit, elementRedundancyBit, 0);
+            orVal = getOrVal(val, elementRedundancyBit, 0);
+            packInfo[fIdx + 1][0] &= ~mask;
+            packInfo[fIdx + 1][0] |= orVal;
+        }
+        else if (componentRedundancyBit > 0) {
+            mask = getOrVal(kFullBit, componentRedundancyBit, 0);
+            orVal = getOrVal(val, componentRedundancyBit, 0);
+            packInfo[fIdx][sIdx + 1] &= ~mask;
+            packInfo[fIdx][sIdx + 1] |= orVal;
+        }
+        offset += stride;
+    }
+    uint getElementFromPackedSpriteHitInfo(const PackedSpriteHitInfo& packInfo, uint& offset, uint stride)
+    {
+        static const uint kElementSize = 128;
+        static const uint kElementSizeMask = 127;
+        static const uint kElementSizeBit = 7;
+        static const uint kComponent = 32;
+        static const uint kComponentMask = 31;
+        static const uint kComponentBit = 5;
+        static const uint kFullBit = ~0;
+        uint retVal = 0;
+        uint mask = getOrVal(kFullBit, stride, offset & kComponentMask);
+        uint fIdx = offset >> kElementSizeBit;
+        uint sIdx = offset >> kComponentBit & 0x03;
+        int elementRedundancyBit = ((offset & kElementSizeMask) + stride) - kElementSize;
+        int componentRedundancyBit = ((offset & kComponentMask) + stride) - kComponent;
+        retVal |= (packInfo[fIdx][sIdx] & mask) >> (offset & kComponentMask);
+        if (elementRedundancyBit > 0) {
+            mask = getOrVal(kFullBit, elementRedundancyBit, 0);
+            retVal |= (packInfo[fIdx + 1][0] & mask) << (stride - elementRedundancyBit);
+        }
+        else if (componentRedundancyBit > 0) {
+            mask = getOrVal(kFullBit, componentRedundancyBit, 0);
+            retVal |= (packInfo[fIdx][sIdx + 1] & mask) << (stride - componentRedundancyBit);
+        }
+        offset += stride;
+        return retVal;
+    }
+    void pack(PackedSpriteHitInfo& packInfo) {
+        // PackedSpriteHitInfo packInfo;
+        uint offset = 0;
+        setPackedSpriteHitInfo(packInfo, offset, 32, asuint(hitT));
+        setPackedSpriteHitInfo(packInfo, offset, AABB_CNT_MSB, aabbHitCnt);
+        for (uint i = 0; i < MAX_AABB_CNT_PERRAY; ++i) {
+            setPackedSpriteHitInfo(packInfo, offset, AABB_IDX_MSB, aabbIdx[i]);
+        }
+    }
+    void encode(const PackedSpriteHitInfo& packInfo)
+    {
+        uint offset = 0;
+        hitT = asfloat(getElementFromPackedSpriteHitInfo(packInfo, offset, 32));
+        aabbHitCnt = getElementFromPackedSpriteHitInfo(packInfo, offset, AABB_CNT_MSB);
+        for (uint i = 0; i < MAX_AABB_CNT_PERRAY; ++i) {
+            aabbIdx[i] = getElementFromPackedSpriteHitInfo(packInfo, offset, AABB_IDX_MSB);
+        }
+    }
+};
+
 int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nShowCmd)
 {
+    //SpriteRayHitInfo sInfo = {
+    //    3.72009f,
+    //    3,
+    //};
+    //std::fill(std::begin(sInfo.aabbIdx), std::end(sInfo.aabbIdx), 0xff);
+    //PackedSpriteHitInfo packInfo;
+    //sInfo.pack(packInfo);
+    //SpriteRayHitInfo tmp;
+    //tmp.encode(packInfo);
     HelloDXR::UniquePtr pRenderer = std::make_unique<HelloDXR>();
     SampleConfig config;
     config.windowDesc.title = "HelloDXR";

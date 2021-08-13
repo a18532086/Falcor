@@ -80,6 +80,8 @@ private:
     SceneBuilder::SharedPtr mpSceneBuilder;
 
     RtProgram::SharedPtr mpRaytraceProgram = nullptr;
+    ComputeProgram::SharedPtr mpCSProgram = nullptr;
+    ComputeProgram::SharedPtr mpBlitProgram = nullptr;
     Camera::SharedPtr mpCamera;
     ParticleSystem::SharedPtr mpPSys;
 
@@ -89,7 +91,11 @@ private:
     bool mbUpdateAABB = false;
     bool mbShowRasterPS = false;
     bool mbCreatePS = false;
+    uint32_t mWidth = 1;
+    uint32_t mHeight = 1;
     RtProgramVars::SharedPtr mpRtVars;
+    ComputeVars::SharedPtr mpCSVars;
+    ComputeVars::SharedPtr mpBlitVars;
     //RtSceneRenderer::SharedPtr mpRtRenderer;
     Texture::SharedPtr mpRtOut;
     std::vector<ParticleSystem::SharedPtr> mpParticleSystems;
@@ -97,6 +103,10 @@ private:
     std::vector<Texture::SharedPtr> mpTextures;
     Buffer::SharedPtr mpRotateBuffer;
     Buffer::SharedPtr mpRangeBuffer;
+    Buffer::SharedPtr mpLockBuffer;
+    Buffer::SharedPtr mpRGS2CSBuffer;
+    Buffer::SharedPtr mpUonrmRTBuffer;
+    Buffer::SharedPtr mpUonrmRTClearBuffer;
     GpuTimer::SharedPtr mpTimer;
     Texture::SharedPtr mpTexture;
     Sampler::SharedPtr mpLinearSampler;
