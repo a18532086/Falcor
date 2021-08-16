@@ -1,0 +1,353 @@
+#pragma once
+
+#ifndef MAX_AABB_CNT_PERRAY
+#define MAX_AABB_CNT_PERRAY 10
+#endif
+
+#ifndef AABB_CNT_MSB
+#define AABB_CNT_MSB 4
+#endif
+
+#ifndef MAX_AABB_IDX_CNT
+#define MAX_AABB_IDX_CNT 256
+#endif
+
+#ifndef AABB_IDX_MSB
+#define AABB_IDX_MSB 8
+#endif
+
+#ifndef MAX_OIT_CNT_PERRAY
+#define MAX_OIT_CNT_PERRAY 4
+#endif
+
+#ifndef MAX_DEPTH
+#define MAX_DEPTH 2
+#endif
+
+struct Particle{
+    float3 center;
+    float scale;
+    float cosRot;
+    float sinRot;
+};
+
+struct Range{
+    uint offset;
+    uint size;
+};
+
+#ifndef SPRITE_HITINFO_BIT_SIZE
+#define SPRITE_HITINFO_BIT_SIZE (32 + AABB_CNT_MSB + AABB_IDX_MSB * MAX_AABB_CNT_PERRAY)
+                            /* float + aabbHitCnt + aabbIdx[MAX_AABB_CNT_PERRAY] */
+#endif
+
+#ifndef SPRITE_PACKED_HITINFO_SIZE
+#define SPRITE_PACKED_HITINFO_SIZE ((SPRITE_HITINFO_BIT_SIZE-1)/128+1)
+#endif
+
+typedef uint4[SPRITE_PACKED_HITINFO_SIZE] PackedSpriteHitInfo;
+
+void getNullPackedSpriteHitInfo(inout PackedSpriteHitInfo NullItem){
+    for (uint i = 0; i < SPRITE_PACKED_HITINFO_SIZE; ++i){
+        NullItem[i] = uint4(0);
+    }
+}
+
+uint getOrVal(uint val, uint bitStride, uint offset){
+    uint mask = bitStride == 32 ? 0xffffffff : ((1 << bitStride) - 1);
+    return (val & mask) << offset;
+}
+
+
+struct SpriteRayHitInfo{
+    float hitT;
+    uint aabbHitCnt;
+    uint aabbIdx[MAX_AABB_CNT_PERRAY];
+    void setPackedSpriteHitInfo(inout PackedSpriteHitInfo packInfo, inout uint offset, uint stride, uint val){
+        static const uint kElementSize = 128;
+        static const uint kElementSizeMask = 127;
+        static const uint kElementSizeBit = 7;
+        static const uint kComponent = 32;
+        static const uint kComponentMask = 31;
+        static const uint kComponentBit = 5;
+        static const uint kFullBit = ~0;
+        uint mask = getOrVal(kFullBit, stride, offset & kComponentMask);
+        uint orVal = getOrVal(val, stride, offset & kComponentMask);
+        uint fIdx = offset >> kElementSizeBit;
+        uint sIdx = offset >> kComponentBit & 0x03;
+        int elementRedundancyBit = ((offset & kElementSizeMask) + stride) - kElementSize;
+        int componentRedundancyBit = ((offset & kComponentMask) + stride) - kComponent;
+        packInfo[fIdx][sIdx] &= ~mask;
+        packInfo[fIdx][sIdx] |= orVal;
+        if (elementRedundancyBit > 0) {
+            mask = getOrVal(kFullBit, elementRedundancyBit, 0);
+            orVal = getOrVal(val, elementRedundancyBit, 0);
+            packInfo[fIdx + 1][0] &= ~mask;
+            packInfo[fIdx + 1][0] |= orVal;
+        }
+        else if (componentRedundancyBit > 0) {
+            mask = getOrVal(kFullBit, componentRedundancyBit, 0);
+            orVal = getOrVal(val, componentRedundancyBit, 0);
+            packInfo[fIdx][sIdx + 1] &= ~mask;
+            packInfo[fIdx][sIdx + 1] |= orVal;
+        }
+        offset += stride;
+    }
+    uint getElementFromPackedSpriteHitInfo(PackedSpriteHitInfo packInfo, inout uint offset, uint stride)
+    {
+        static const uint kElementSize = 128;
+        static const uint kElementSizeMask = 127;
+        static const uint kElementSizeBit = 7;
+        static const uint kComponent = 32;
+        static const uint kComponentMask = 31;
+        static const uint kComponentBit = 5;
+        static const uint kFullBit = ~0;
+        uint retVal = 0;
+        uint mask = getOrVal(kFullBit, stride, offset & kComponentMask);
+        uint fIdx = offset >> kElementSizeBit;
+        uint sIdx = offset >> kComponentBit & 0x03;
+        int elementRedundancyBit = ((offset & kElementSizeMask) + stride) - kElementSize;
+        int componentRedundancyBit = ((offset & kComponentMask) + stride) - kComponent;
+        retVal |= (packInfo[fIdx][sIdx] & mask) >> (offset & kComponentMask);
+        if (elementRedundancyBit > 0) {
+            mask = getOrVal(kFullBit, elementRedundancyBit, 0);
+            retVal |= (packInfo[fIdx + 1][0] & mask) << (stride - elementRedundancyBit);
+        }
+        else if (componentRedundancyBit > 0) {
+            mask = getOrVal(kFullBit, componentRedundancyBit, 0);
+            retVal |= (packInfo[fIdx][sIdx + 1] & mask) << (stride - componentRedundancyBit);
+        }
+        offset += stride;
+        return retVal;
+    }
+    void packTo(inout PackedSpriteHitInfo packInfo){
+        // PackedSpriteHitInfo packInfo;
+        uint offset = 0;
+        setPackedSpriteHitInfo(packInfo, offset, 32, asuint(hitT));
+        setPackedSpriteHitInfo(packInfo, offset, AABB_CNT_MSB, aabbHitCnt);
+        [unroll]
+        for (uint i = 0; i < MAX_AABB_CNT_PERRAY; ++i){
+            setPackedSpriteHitInfo(packInfo, offset, AABB_IDX_MSB, aabbIdx[i]);
+        }
+    }
+    [mutating]
+    void decode(PackedSpriteHitInfo packInfo)
+    {
+        uint offset = 0;
+        hitT = asfloat(getElementFromPackedSpriteHitInfo(packInfo, offset, 32));
+        aabbHitCnt = getElementFromPackedSpriteHitInfo(packInfo, offset, AABB_CNT_MSB);
+        for (uint i = 0; i < MAX_AABB_CNT_PERRAY; ++i) {
+            aabbIdx[i] = getElementFromPackedSpriteHitInfo(packInfo, offset, AABB_IDX_MSB);
+        }
+    }
+};
+
+
+
+struct RGS2CS_t{
+    float3 vDir; 
+    bool needBlend;
+    float3 color;
+    uint _pad0;
+    float3 specularCoefficient;
+    uint posXY;
+    RayDesc ray; // 2 * uint4 
+    PackedSpriteHitInfo packedSHitInfo; // n * uint4
+    [mutating] void setPos(uint2 pos){
+        posXY =  pos.x | pos.y << 16;
+    }
+    uint2 getPos(){
+        static const uint mask = 0x0000ffff;
+        uint2 pos =  uint2(posXY & mask, posXY >> 16);
+        return pos;
+    }
+};
+
+float4 proceduralTexture(Texture2D texture, SamplerState sampler, float2 UV){
+    return texture.SampleLevel(sampler, UV, 0.0);
+}
+
+struct HitPoint{
+    float3 p;
+    float t;
+    float hitT;
+}
+
+#ifdef _DEBUG
+struct DebugInfo{
+    uint nowHitCnt;
+    float4 sColor;
+    PackedSpriteHitInfo packInfo;
+    SpriteRayHitInfo sInfo;
+    SpriteRayHitInfo sInfoFromEncode;
+    // uint aabbIdxCnt;
+    // float4 colors[MAX_OIT_CNT_PERRAY];
+};
+#endif
+
+float4x4 getTranslateMat(float3 offset){
+    return float4x4(float4(1, 0, 0, offset.x), float4(0, 1, 0, offset.y), float4(0, 0, 1, offset.z), float4(0, 0, 0, 1));
+}
+
+float3x3 getNewBasisMat(float3 x,float3 y, float3 z){
+    return float3x3(x,y,z);
+}
+
+float3 getOrthoVector(float3 vec){
+    return cross(vec,float3(0, 1, 0));
+}
+
+float3 rotateAroundZ(float3 vec,float c,float s){
+    return float3(vec.x * c - vec.y * s, vec.x * s + vec.y * c, vec.z);
+}
+
+float3 dealWithSpriteAndBlend(float3 vDir, RayDesc ray, SpriteRayHitInfo rayData, float3 color, Texture2D texture,
+    SamplerState sampler, StructuredBuffer<Particle> particlePool,
+    StructuredBuffer<Range> particleSystemRanges,uint threadID = 0 /* for debug */){
+
+    HitPoint arrayHitT[MAX_OIT_CNT_PERRAY + 1];
+
+    float tMax = rayData.hitT == -1 ?  100000 : rayData.hitT;
+
+    for (uint i = 0; i < MAX_OIT_CNT_PERRAY + 1; ++i){
+        arrayHitT[i].hitT = tMax;
+        arrayHitT[i].p = float3(0);
+        arrayHitT[i].t = 1;
+    }
+
+    uint nowMaxIdx = 0;
+
+    float3 viewDir = vDir;
+
+    float3 right = normalize(getOrthoVector(viewDir));
+
+    float3 up = cross(viewDir,right);
+
+    float3x3 rotWorld2View = getNewBasisMat(right,up,viewDir);
+
+    SpriteRayHitInfo RGS_info = rayData;
+
+
+    // To avoid flicker, sort AABBs by ID
+    for (uint i = 0; i < RGS_info.aabbHitCnt; ++i){
+        for (uint j = i + 1; j < RGS_info.aabbHitCnt; ++j){
+            if (RGS_info.aabbIdx[i] > RGS_info.aabbIdx[j]){
+                uint tmp = RGS_info.aabbIdx[i];
+                RGS_info.aabbIdx[i] = RGS_info.aabbIdx[j];
+                RGS_info.aabbIdx[j] = tmp;
+            }
+        }
+    }
+#ifdef _DEBUG
+    float4 sColor = 1.0;
+#endif
+    for (uint psIdx = 0; psIdx < RGS_info.aabbHitCnt; ++psIdx){
+        uint gIdx = RGS_info.aabbIdx[psIdx];
+
+        //
+
+        float3 rayOrigW = ray.Origin;
+        float3 rayDirW = ray.Direction;
+
+
+        Range range = particleSystemRanges[gIdx];
+
+        uint IdxEnd = range.size + range.offset;
+
+        bool isHit = false;
+
+        float2 hitUV = float2(0.0);
+
+        for (uint particle_ID = range.offset; particle_ID < IdxEnd; ++particle_ID){
+            Particle pd = particlePool[particle_ID];
+            //float rot = pd.rotate;
+
+            // float cosTheta = cos(rot);
+            // float sinTheta = sin(rot);
+
+            float3 center = pd.center;
+            float radius = pd.scale;
+
+            // float4x4 translateMat = getTranslateMat(-center);
+            // float4x4 rotAroundZ = float4x4(float4(cosTheta, sinTheta,0,0), float4(-sinTheta, cosTheta, 0, 0), float4(0, 0, 1, 0), float4(0, 0, 0, 1));
+            // float4x4 worldToSpriteLocalMat = mul(rotAroundZ, mul(float4x4(float4(rotWorld2View[0],0),float4(rotWorld2View[1],0),float4(rotWorld2View[2],0),float4(0,0,0,1)), translateMat));
+
+            float3 rotRayDir = rotateAroundZ(mul(rotWorld2View ,rayDirW), pd.cosRot, pd.sinRot);
+            float3 rotRayOrig = rotateAroundZ(mul(rotWorld2View ,rayOrigW - center), pd.cosRot, pd.sinRot);
+            // float4 rotRayDir = mul(worldToSpriteLocalMat ,float4(rayDirW,0));
+            // float4 rotRayOrig = mul(worldToSpriteLocalMat ,float4(rayOrigW,1));
+
+            if (abs(rotRayDir.z) > 1e-3){
+
+                float nowHitT = - rotRayOrig.z / rotRayDir.z;
+                float2 nowHitP = (rotRayOrig + nowHitT * rotRayDir).xy;
+
+                float2 UV = nowHitP / float2(radius);
+
+                if (nowHitT >= ray.TMin && nowHitT < tMax && all(abs(UV) < float2(1.0))){
+                    UV = UV * float2(0.5) + float2(0.5);
+                    isHit = true;
+                    hitUV = UV;
+                    //float4 spriteColor = float4((gIdx & 2) >> 1, gIdx & 1, gIdx & 1, 0.5);
+                    float4 spriteColor = proceduralTexture(texture, sampler, UV);
+#ifdef _DEBUG
+                    sColor = spriteColor;
+#endif
+                    //HitPoint lastVal = {spriteColor.rgb * spriteColor.a, 1 - spriteColor.a, nowHitT};
+                    HitPoint lastVal;
+                    lastVal.p = spriteColor.rgb * spriteColor.a;
+                    lastVal.t = 1.0 - spriteColor.a;
+                    lastVal.hitT = nowHitT;
+
+                    for (uint i = 0;i < nowMaxIdx + 1; ++i){
+                        if (arrayHitT[i].hitT > nowHitT){
+                            HitPoint tmp = arrayHitT[i];
+                            arrayHitT[i] = lastVal;
+                            lastVal = tmp;
+                        }
+                    }
+
+                    if (nowMaxIdx == MAX_OIT_CNT_PERRAY){
+                        HitPoint merge;
+                        merge.p = arrayHitT[MAX_OIT_CNT_PERRAY - 1].p + (arrayHitT[MAX_OIT_CNT_PERRAY].p * arrayHitT[MAX_OIT_CNT_PERRAY - 1].t);
+                        merge.t = arrayHitT[MAX_OIT_CNT_PERRAY - 1].t * arrayHitT[MAX_OIT_CNT_PERRAY].t;
+                        merge.hitT = arrayHitT[MAX_OIT_CNT_PERRAY - 1].hitT;
+                        arrayHitT[MAX_OIT_CNT_PERRAY - 1] = merge;
+                        arrayHitT[MAX_OIT_CNT_PERRAY].hitT = tMax;
+                    }
+                    else{
+                        ++nowMaxIdx;
+                    }
+
+                    
+                }
+
+            }
+        }
+    }
+    for (uint i = 0;i < nowMaxIdx; ++i){
+        uint idx = nowMaxIdx - i - 1;
+        color = arrayHitT[idx].p + (color * arrayHitT[idx].t);
+    }
+#ifdef _DEBUG
+    PackedSpriteHitInfo packInfo;
+    for (uint i = 0; i < SPRITE_PACKED_HITINFO_SIZE; ++i){
+        packInfo[i] = uint4(0);
+    }
+    RGS_info.packTo(packInfo);
+    SpriteRayHitInfo encodeSInfo;
+    encodeSInfo.decode(packInfo);
+    DebugInfo dbinfo = {
+        nowMaxIdx,
+        sColor,
+        packInfo,
+        RGS_info,
+        encodeSInfo,
+        // rayData.aabbHitCnt,
+    };
+
+
+    dBuffer[threadID] = dbinfo;
+#endif
+    return color;
+}

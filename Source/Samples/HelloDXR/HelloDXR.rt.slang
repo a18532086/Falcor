@@ -45,6 +45,7 @@ cbuffer PerFrameCB
 
 StructuredBuffer<float> rotatePool;
 RWStructuredBuffer<RGS2CS_t> RGS2CSBuffer : register(u3);
+RWStructuredBuffer<RGSIndexInfo> RGSIndexBuffer : register(u5); /* size: numPixels * maxDepth */
 #ifdef _DEBUG
 RWStructuredBuffer<DebugInfo> dBuffer : register(u4);
 #endif
@@ -481,8 +482,16 @@ void rayGenIR2CS(uniform RWTexture2D<float4> gOutput)
         output.packedSHitInfo = rayData.sHitInfo;
         output.color = color;
         output.specularCoefficient = specularCoefficient;
+        output.setPos(launchIndex.xy);
 
         oData2CS[depth] = output;
+        
+        uint totalSpriteCnt = 0;
+        for (uint psIdx = 0; psIdx < SRHitInfo.aabbHitCnt; ++psIdx){
+            uint gIdx = SRHitInfo.aabbIdx[psIdx];
+            Range range = particleSystemRanges[gIdx];
+            totalSpriteCnt += range.size;
+        }
 
         if (bShouldUpdateState){
             updateRayState(v, sd, SRHitInfo.hitT, depth == 0, specularCoefficient, ray, vDir);

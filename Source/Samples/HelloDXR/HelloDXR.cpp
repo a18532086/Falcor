@@ -56,6 +56,11 @@ namespace
         uint32_t offset;
         uint32_t size;
     };
+    struct RangeAndIndex {
+        uint offset;
+        uint size;
+        uint RGS_ID;
+    };
 #ifdef _DEBUG
     struct DebugInfo {
         uint totaltime;
@@ -64,6 +69,8 @@ namespace
         uint aabbIdxCnt;
     };
 #endif
+
+    static constexpr uint kMaxBufferSize = 10240000;
 };
 
 void HelloDXR::createParticleSystem(ExamplePixelShaders shadertype)
@@ -79,6 +86,10 @@ void HelloDXR::createParticleSystem(ExamplePixelShaders shadertype)
     mpRangeBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "particleSystemRanges", static_cast<uint32_t>(mpParticleSystems.size()) + 1);
     mpCSVars->setBuffer("particlePool", mpRotateBuffer);
     mpCSVars->setBuffer("particleSystemRanges", mpRangeBuffer);
+    if (mpFillProgram)
+    {
+        mpFillVars->setBuffer("particleSystemRanges", mpRangeBuffer);
+    }
 #else
     mpRotateBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "rotatePool", particleMaxSize);
 #endif
@@ -223,10 +234,20 @@ void HelloDXR::loadScene(const std::string& filename, const Fbo* pTargetFbo)
     blitProgDesc.csEntry("main");
     blitProgDesc.setCompilerFlags(Shader::CompilerFlags::GenerateDebugInfo);
     mpBlitProgram = ComputeProgram::create(blitProgDesc);
+
+    ComputeProgram::Desc fillProgDesc;
+    fillProgDesc.addShaderLibrary("Samples/HelloDXR/Fill.cs.slang");
+    fillProgDesc.csEntry("main");
+    fillProgDesc.setCompilerFlags(Shader::CompilerFlags::GenerateDebugInfo);
+    mpFillProgram = ComputeProgram::create(fillProgDesc);
+
     mpRtVars = RtProgramVars::create(mpRaytraceProgram, mpScene);
     mpCSVars = ComputeVars::create(mpCSProgram.get());
+    mpFillVars = ComputeVars::create(mpFillProgram.get());
     mpBlitVars = ComputeVars::create(mpBlitProgram.get());
     mpRaytraceProgram->setScene(mpScene);
+
+    mpSpriteColorInfoBuffer = Buffer::createStructured(mpFillProgram.get(), "SpriteColorInfoBuffer", kMaxBufferSize, ResourceBindFlags::UnorderedAccess);
 }
 
 void HelloDXR::onLoad(RenderContext* pRenderContext)
@@ -276,6 +297,28 @@ void HelloDXR::renderRT(RenderContext* pContext, const Fbo* pTargetFbo)
     mpScene->raytrace(pContext, mpRaytraceProgram.get(), mpRtVars, uint3(pTargetFbo->getWidth(), pTargetFbo->getHeight(), 1));
     mpTimer->end();
     mRTTime = mpTimer->getElapsedTime();
+    auto pCnt = static_cast<Range*>(mpRGSIndexBuffer->map(Buffer::MapType::Read));
+    auto bufSize = mpRGSIndexBuffer->getSize() / mpRGSIndexBuffer->getElementSize();
+    uint preSum = 0;
+    std::vector<RangeAndIndex> vRanges;
+    for (size_t i = 0; i < bufSize; ++i)
+    {
+        if ((preSum >= kMaxBufferSize || i == bufSize - 1) && !vRanges.empty())
+        {
+            mpSpriteIndexRangeBuffer = Buffer::createStructured(mpFillProgram.get(), "SpriteIndexRangeBuffer", static_cast<uint32_t>(vRanges.size()),ResourceBindFlags::ShaderResource,Buffer::CpuAccess::None,vRanges.data());
+            mpFillVars->setBuffer("SpriteIndexRangeBuffer", mpSpriteIndexRangeBuffer);
+            mpFillProgram->dispatchCompute(pContext, mpFillVars.get(), uint3{ 1024/32 ,vRanges.size(),1 });
+            //dispatch(vRanges.size()) xxx;
+            vRanges.clear();
+            break;
+        }
+        if (pCnt[i].size > 0)
+        {
+            vRanges.push_back({ preSum ,pCnt[i].size,static_cast<uint>(i)});
+            preSum += pCnt[i].size;
+        }
+    }
+
     mpCSProgram->dispatchCompute(pContext, mpCSVars.get(), uint3(mWidth / 16 , mHeight * 2 /16, 1));
     mpBlitProgram->dispatchCompute(pContext, mpBlitVars.get(), uint3(mWidth / 32 , mHeight / 8, 1));
     pContext->blit(mpRtOut->getSRV(), pTargetFbo->getRenderTargetView(0));
@@ -376,6 +419,7 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
         }
         mpRtVars->setBuffer("particleSystemRanges", mpRangeBuffer);
         mpRtVars->setBuffer("particlePool", mpRotateBuffer);
+        mpRtVars->setBuffer("RGSIndexBuffer", mpRGSIndexBuffer);
         mpRtVars->setBuffer("RGS2CSBuffer", mpRGS2CSBuffer);
 #else
         mpRtVars->setBuffer("rotatePool", mpRotateBuffer);
@@ -471,11 +515,13 @@ void HelloDXR::onResizeSwapChain(uint32_t width, uint32_t height)
 #ifdef _DEBUG
         mpDBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "dBuffer", height * width, ResourceBindFlags::UnorderedAccess);
 #endif
+        mpRGS2CSBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "RGS2CSBuffer", height * width * 2, ResourceBindFlags::UnorderedAccess |ResourceBindFlags::ShaderResource);
+        mpRGSIndexBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "RGSIndexBuffer", height * width * 2, ResourceBindFlags::UnorderedAccess);
     }
     if (mpCSProgram)
     {
         mpLockBuffer = Buffer::createStructured(mpCSProgram.get(), "lockBuffer", height * width, ResourceBindFlags::UnorderedAccess);
-        mpRGS2CSBuffer = Buffer::createStructured(mpCSProgram.get(), "RGS2CSBuffer", height * width * 2, ResourceBindFlags::UnorderedAccess);
+
         mpUonrmRTBuffer = Buffer::createStructured(mpCSProgram.get(), "unormFBO", height * width * 2 * 3, ResourceBindFlags::UnorderedAccess);
         std::vector<char> vClear(mpUonrmRTBuffer->getSize(), 0);
         mpUonrmRTClearBuffer = Buffer::create(mpUonrmRTBuffer->getSize(), ResourceBindFlags::None, Buffer::CpuAccess::None,vClear.data());
@@ -494,6 +540,13 @@ void HelloDXR::onResizeSwapChain(uint32_t width, uint32_t height)
         mpBlitVars->setTexture("gOutput", mpRtOut);
 
         mpBlitVars["CSCB"]["gDispatchX"] = mWidth;
+    }
+
+    if (mpFillProgram)
+    {
+        mpFillVars->setBuffer("RGS2CSBuffer", mpRGS2CSBuffer);
+        mpFillVars->setBuffer("particleSystemRanges", mpRangeBuffer);
+        mpFillVars->setBuffer("SpriteColorInfoBuffer", mpSpriteColorInfoBuffer);
     }
 
 }
