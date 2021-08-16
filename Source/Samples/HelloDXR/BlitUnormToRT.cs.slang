@@ -3,7 +3,7 @@ cbuffer CSCB{
 };
 RWTexture2D<float4> gOutput : register(u1);
 RWStructuredBuffer<uint> unormFBO : register(u2);
-[numthreads(32,8,1)]
+[numthreads(32,1,1)]
 void main(uint3 groupID : SV_DispatchThreadID){
     uint idx = gDispatchX * groupID.y + groupID.x;
     uint address = idx * 3;

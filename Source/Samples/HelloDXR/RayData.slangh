@@ -148,7 +148,7 @@ struct RGS2CS_t{
     float3 vDir; 
     bool needBlend;
     float3 color;
-    uint _pad0;
+    uint cnt;
     float3 specularCoefficient;
     uint posXY;
     RayDesc ray; // 2 * uint4 
@@ -176,7 +176,6 @@ struct HitPoint{
 #ifdef _DEBUG
 struct DebugInfo{
     uint nowHitCnt;
-    float4 sColor;
     PackedSpriteHitInfo packInfo;
     SpriteRayHitInfo sInfo;
     SpriteRayHitInfo sInfoFromEncode;
@@ -238,9 +237,6 @@ float3 dealWithSpriteAndBlend(float3 vDir, RayDesc ray, SpriteRayHitInfo rayData
             }
         }
     }
-#ifdef _DEBUG
-    float4 sColor = 1.0;
-#endif
     for (uint psIdx = 0; psIdx < RGS_info.aabbHitCnt; ++psIdx){
         uint gIdx = RGS_info.aabbIdx[psIdx];
 
@@ -290,9 +286,6 @@ float3 dealWithSpriteAndBlend(float3 vDir, RayDesc ray, SpriteRayHitInfo rayData
                     hitUV = UV;
                     //float4 spriteColor = float4((gIdx & 2) >> 1, gIdx & 1, gIdx & 1, 0.5);
                     float4 spriteColor = proceduralTexture(texture, sampler, UV);
-#ifdef _DEBUG
-                    sColor = spriteColor;
-#endif
                     //HitPoint lastVal = {spriteColor.rgb * spriteColor.a, 1 - spriteColor.a, nowHitT};
                     HitPoint lastVal;
                     lastVal.p = spriteColor.rgb * spriteColor.a;
@@ -339,7 +332,6 @@ float3 dealWithSpriteAndBlend(float3 vDir, RayDesc ray, SpriteRayHitInfo rayData
     encodeSInfo.decode(packInfo);
     DebugInfo dbinfo = {
         nowMaxIdx,
-        sColor,
         packInfo,
         RGS_info,
         encodeSInfo,

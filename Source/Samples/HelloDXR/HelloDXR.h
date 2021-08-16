@@ -81,7 +81,6 @@ private:
 
     RtProgram::SharedPtr mpRaytraceProgram = nullptr;
     ComputeProgram::SharedPtr mpCSProgram = nullptr;
-    ComputeProgram::SharedPtr mpFillProgram = nullptr;
     ComputeProgram::SharedPtr mpBlitProgram = nullptr;
     Camera::SharedPtr mpCamera;
     ParticleSystem::SharedPtr mpPSys;
@@ -96,7 +95,6 @@ private:
     uint32_t mHeight = 1;
     RtProgramVars::SharedPtr mpRtVars;
     ComputeVars::SharedPtr mpCSVars;
-    ComputeVars::SharedPtr mpFillVars;
     ComputeVars::SharedPtr mpBlitVars;
     //RtSceneRenderer::SharedPtr mpRtRenderer;
     Texture::SharedPtr mpRtOut;
@@ -109,9 +107,6 @@ private:
     Buffer::SharedPtr mpRGS2CSBuffer;
     Buffer::SharedPtr mpUonrmRTBuffer;
     Buffer::SharedPtr mpUonrmRTClearBuffer;
-    Buffer::SharedPtr mpRGSIndexBuffer;
-    Buffer::SharedPtr mpSpriteColorInfoBuffer;
-    Buffer::SharedPtr mpSpriteIndexRangeBuffer;
     GpuTimer::SharedPtr mpTimer;
     Texture::SharedPtr mpTexture;
     Sampler::SharedPtr mpLinearSampler;
@@ -124,6 +119,7 @@ private:
 
 #ifdef _DEBUG
     Buffer::SharedPtr mpDBuffer;
+    Buffer::SharedPtr mpbaDBuffer;
 #endif
     uint32_t mSampleIndex = 0xdeadbeef;
 

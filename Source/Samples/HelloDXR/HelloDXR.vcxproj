@@ -24,7 +24,6 @@
   <ItemGroup>
     <ShaderSource Include="Blend.cs.slang" />
     <ShaderSource Include="BlitUnormToRT.cs.slang" />
-    <ShaderSource Include="Fill.cs.slang" />
     <ShaderSource Include="ParticleInterpColor.ps.slang" />
     <ShaderSource Include="HelloDXR.ps.slang" />
     <ShaderSource Include="HelloDXR.rt.slang" />

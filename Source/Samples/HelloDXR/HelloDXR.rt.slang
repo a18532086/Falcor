@@ -45,7 +45,6 @@ cbuffer PerFrameCB
 
 StructuredBuffer<float> rotatePool;
 RWStructuredBuffer<RGS2CS_t> RGS2CSBuffer : register(u3);
-RWStructuredBuffer<RGSIndexInfo> RGSIndexBuffer : register(u5); /* size: numPixels * maxDepth */
 #ifdef _DEBUG
 RWStructuredBuffer<DebugInfo> dBuffer : register(u4);
 #endif
@@ -417,7 +416,6 @@ void rayGenIR2CS(uniform RWTexture2D<float4> gOutput)
 
     ScatterRayData rayData;
     float3 vDir = getCameraViewDir();
-    float4 accColor = float4(0.0,0.0,0.0,1.0);
     float3 specularCoefficient = float3(1.0);
     float3 color = 0.0;
     PackedSpriteHitInfo clearPSHitInfo;
@@ -464,8 +462,6 @@ void rayGenIR2CS(uniform RWTexture2D<float4> gOutput)
             }
 
             color += sd.emissive;
-
-            accColor.rgb += color;
         }
         else{
             color = float3(0.01);
@@ -484,14 +480,17 @@ void rayGenIR2CS(uniform RWTexture2D<float4> gOutput)
         output.specularCoefficient = specularCoefficient;
         output.setPos(launchIndex.xy);
 
-        oData2CS[depth] = output;
-        
         uint totalSpriteCnt = 0;
         for (uint psIdx = 0; psIdx < SRHitInfo.aabbHitCnt; ++psIdx){
             uint gIdx = SRHitInfo.aabbIdx[psIdx];
             Range range = particleSystemRanges[gIdx];
             totalSpriteCnt += range.size;
         }
+        output.cnt = totalSpriteCnt;
+
+        oData2CS[depth] = output;
+        
+
 
         if (bShouldUpdateState){
             updateRayState(v, sd, SRHitInfo.hitT, depth == 0, specularCoefficient, ray, vDir);
