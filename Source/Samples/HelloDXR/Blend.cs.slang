@@ -5,26 +5,29 @@
 #endif
 
 #ifndef MAX_SPRITE_PER_AABB
-#define MAX_SPRITE_PER_AABB (16 << MAX_SPRITE_PER_AABB_BIT_LSF16)
+#define MAX_SPRITE_PER_AABB (32 << MAX_SPRITE_PER_AABB_BIT_LSF16)
 #endif
 
 SamplerState gSampler;
 Texture2D<float4> gTex;
 cbuffer CSCB{
     uint gDispatchX;
+    uint gDispatchY;
 };
-RWTexture2D<float4> gOutput : register(u1);
-RWStructuredBuffer<uint> unormFBO : register(u4);
-RWStructuredBuffer<uint> lockBuffer : register(u2);
-StructuredBuffer<RGS2CS_t> RGS2CSBuffer : register(u3);
+StructuredBuffer<RGS2CS_t> RGS2CSBuffer : register(u1);
+StructuredBuffer<uint> RGSIndexBuffer : register(u2);
+StructuredBuffer<uint> RGSIndexCntBuffer : register(u3);
 #ifdef _DEBUG
-RWStructuredBuffer<DebugInfo> dBuffer : register(u5);
+RWStructuredBuffer<DebugInfo> dBuffer : register(u4);
 struct BlendInfoArray{
-    float ba[MAX_SPRITE_PER_AABB];
-    float color[MAX_SPRITE_PER_AABB];
+    BlendInfo ba[MAX_SPRITE_PER_AABB];
 };
-RWStructuredBuffer<BlendInfoArray> badBuffer : register(u6);
+RWStructuredBuffer<BlendInfoArray> badBuffer : register(u5);
 #endif
+
+RWTexture2D<float4> gOutput_0 : register(u6);
+RWTexture2D<float4> gOutput_1 : register(u7);
+
 StructuredBuffer<Particle> particlePool;
 StructuredBuffer<Range> particleSystemRanges;
 // [numthreads(16,16,1)]
@@ -57,22 +60,19 @@ uint InsertOneBit( uint Value, uint OneBitMask )
 }
 
 struct BlendInfo{
-    float4 color;
     float hitT;
+    float2 UV;
 }
-groupshared BlendInfo blendArray[MAX_SPRITE_PER_AABB][MAX_DEPTH];
-groupshared float3 colors[MAX_DEPTH];
-[numthreads(MAX_SPRITE_PER_AABB, MAX_DEPTH, 1)]
-void doBlendCSParallex(uint3 groupID : SV_GroupID, uint3 gTID : SV_GroupThreadID){
-    uint idx = gDispatchX * groupID.y + groupID.x;
-    uint gpIdx = gTID.x;
-    uint depth = gTID.y;
-    idx = MAX_DEPTH * idx + gTID.y;
-    RGS2CS_t input = RGS2CSBuffer[idx];
-    colors[depth] = float3(0);
-    blendArray[gpIdx][depth].color = float4(0.0);
-    blendArray[gpIdx][depth].hitT = -1;
-    if (input.needBlend){
+groupshared BlendInfo blendArray[MAX_SPRITE_PER_AABB];
+[numthreads(MAX_SPRITE_PER_AABB, 1, 1)]
+void doBlendCSParallex(uint3 groupID : SV_GroupID, uint gpIdx : SV_GroupIndex){
+    uint idx = MAX_GROUPSIZE_X * groupID.y + groupID.x;
+    uint maxIndexCnt = RGSIndexCntBuffer[MAX_SPRITE_PER_AABB_BIT_LSF16];
+    if (idx < maxIndexCnt){
+        uint rgsIdx = RGSIndexBuffer[MAX_SPRITE_PER_AABB_BIT_LSF16 * gDispatchX * gDispatchY * 2 + idx];
+        RGS2CS_t input = RGS2CSBuffer[rgsIdx];
+        blendArray[gpIdx].UV = float2(0.0);
+        blendArray[gpIdx].hitT = -1;
 
         if (gpIdx < input.cnt){
             SpriteRayHitInfo rayData;
@@ -133,15 +133,14 @@ void doBlendCSParallex(uint3 groupID : SV_GroupID, uint3 gTID : SV_GroupThreadID
                     UV = UV * float2(0.5) + float2(0.5);
                     isHit = true;
                     hitUV = UV;
-                    float4 spriteColor = proceduralTexture(gTex, gSampler, UV);
-                    blendArray[gpIdx][depth].color = spriteColor;
-                    blendArray[gpIdx][depth].hitT = nowHitT;
+                    //float4 spriteColor = proceduralTexture(gTex, gSampler, UV);
+                    blendArray[gpIdx].UV = UV;
+                    blendArray[gpIdx].hitT = nowHitT;
 
                 }
 
             }
         }
-        
 
         GroupMemoryBarrierWithGroupSync();
 
@@ -150,39 +149,40 @@ void doBlendCSParallex(uint3 groupID : SV_GroupID, uint3 gTID : SV_GroupThreadID
             for (uint j = k / 2; j > 0; j /= 2){
                 uint Index2 = InsertOneBit(gpIdx, j);
                 uint Index1 = Index2 ^ (k == 2 * j ? k - 1 : j);
-                BlendInfo A = blendArray[Index1][depth];
-                BlendInfo B = blendArray[Index2][depth];
+                BlendInfo A = blendArray[Index1];
+                BlendInfo B = blendArray[Index2];
                 if (A.hitT < B.hitT){
-                    blendArray[Index2][depth] = A;
-                    blendArray[Index1][depth] = B;
+                    blendArray[Index2] = A;
+                    blendArray[Index1] = B;
                 }
                 GroupMemoryBarrierWithGroupSync();
             }
         }
 #ifdef _DEBUG
-        badBuffer[idx].ba[gpIdx] = blendArray[gpIdx][depth].hitT;
+        badBuffer[idx].ba[gpIdx] = blendArray[gpIdx];
 #endif
         if (gpIdx == 0){
-            static float3 color = input.color;
+            float3 color = input.color;
             [unroll]
             for (uint i = 0; i < MAX_SPRITE_PER_AABB; ++i){
-                if (blendArray[i][depth].hitT == -1){
+                if (blendArray[i].hitT == -1){
                     color = color;
                 }
                 else{
-                    color = lerp(color, blendArray[i][depth].color.rgb, blendArray[i][depth].color.a);
+                    float4 srcColor = gTex.SampleLevel(gSampler,blendArray[i].UV,0);
+                    color = lerp(color, srcColor.rgb, srcColor.a);
                 }
 
             }
             color *= input.specularCoefficient;
-            colors[depth] = color;
+            if (input.depth == 0){
+                gOutput_0[input.getPos()] = float4(color,1.0);
+            }
+            else{
+                gOutput_1[input.getPos()] = float4(color,1.0);
+            }
+            
         }
     }
-    GroupMemoryBarrierWithGroupSync();
-    if (depth == 0){
-        gOutput[input.getPos()] = float4(0.0);
-        for (uint d = 0; d < MAX_DEPTH;++d){
-            gOutput[input.getPos()].rgb += colors[d];
-        }
-    }
+    
 }

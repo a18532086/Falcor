@@ -22,8 +22,10 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
+    <ShaderSource Include="accRT.ps.slang" />
     <ShaderSource Include="Blend.cs.slang" />
     <ShaderSource Include="BlitUnormToRT.cs.slang" />
+    <ShaderSource Include="GenDispatchArgs.cs.slang" />
     <ShaderSource Include="ParticleInterpColor.ps.slang" />
     <ShaderSource Include="HelloDXR.ps.slang" />
     <ShaderSource Include="HelloDXR.rt.slang" />

@@ -41,6 +41,7 @@ public:
     void onGuiRender(Gui* pGui) override;
 
 private:
+    static constexpr int kMaxGroupKind = 4;
     enum class ExamplePixelShaders
     {
         ConstColor = 0,
@@ -54,8 +55,8 @@ private:
         int32_t mSystemIndex = -1;
         uint32_t mPixelShaderIndex = 0;
         bool mSortSystem = false;
-        int32_t mMaxParticles = 100;
-        int32_t mMaxEmitPerFrame = 100;
+        int32_t mMaxParticles = 50;
+        int32_t mMaxEmitPerFrame = 50;
         Gui::DropdownList mTexDropdown;
     } mGuiData;
 
@@ -80,8 +81,8 @@ private:
     SceneBuilder::SharedPtr mpSceneBuilder;
 
     RtProgram::SharedPtr mpRaytraceProgram = nullptr;
-    ComputeProgram::SharedPtr mpCSProgram = nullptr;
-    ComputeProgram::SharedPtr mpBlitProgram = nullptr;
+    std::array<ComputeProgram::SharedPtr, kMaxGroupKind> mpCSPrograms{};
+    ComputeProgram::SharedPtr mpGenDispatchArgsProgram = nullptr;
     Camera::SharedPtr mpCamera;
     ParticleSystem::SharedPtr mpPSys;
 
@@ -91,26 +92,34 @@ private:
     bool mbUpdateAABB = false;
     bool mbShowRasterPS = false;
     bool mbCreatePS = false;
+    bool mbSpriteRT = true;
+    bool mbMeasureDiff = false;
     uint32_t mWidth = 1;
     uint32_t mHeight = 1;
     RtProgramVars::SharedPtr mpRtVars;
-    ComputeVars::SharedPtr mpCSVars;
-    ComputeVars::SharedPtr mpBlitVars;
+    std::array <ComputeVars::SharedPtr, kMaxGroupKind> mpCSVars;
+    ComputeVars::SharedPtr mpGenDispatchArgsVars;
     //RtSceneRenderer::SharedPtr mpRtRenderer;
     Texture::SharedPtr mpRtOut;
+    std::array<Texture::SharedPtr,2> mpCSBlendOuts;
     std::vector<ParticleSystem::SharedPtr> mpParticleSystems;
     std::vector<PixelShaderData> mPsData;
     std::vector<Texture::SharedPtr> mpTextures;
     Buffer::SharedPtr mpRotateBuffer;
     Buffer::SharedPtr mpRangeBuffer;
-    Buffer::SharedPtr mpLockBuffer;
     Buffer::SharedPtr mpRGS2CSBuffer;
-    Buffer::SharedPtr mpUonrmRTBuffer;
-    Buffer::SharedPtr mpUonrmRTClearBuffer;
+    Buffer::SharedPtr mpRGSIndexCntBuffer;
+    Buffer::SharedPtr mpRGSIndexCntClearBuffer;
+    Buffer::SharedPtr mpDispatchArgsBuffer;
+
+    Buffer::SharedPtr mpRGSIndexBuffer;
     GpuTimer::SharedPtr mpTimer;
     Texture::SharedPtr mpTexture;
     Sampler::SharedPtr mpLinearSampler;
+
+    FullScreenPass::SharedPtr mpAccPass;
     double mRTTime = 0.0;
+    size_t mSpriteCount = 0;
 #ifdef _DEBUG
     double mMaxPrecent = 0.0;
     uint32_t mMaxTotTime = 0;
@@ -124,7 +133,7 @@ private:
     uint32_t mSampleIndex = 0xdeadbeef;
 
     void setPerFrameVars(const Fbo* pTargetFbo);
-    void renderRT(RenderContext* pContext, const Fbo* pTargetFbo);
+    void renderRT(RenderContext* pContext, const Fbo::SharedPtr& pTargetFbo);
     void loadScene(const std::string& filename, const Fbo* pTargetFbo);
     void renderParticleSystem(RenderContext* pContext, const Fbo::SharedPtr& pTargetFbo);
     void createParticleSystem(::HelloDXR::ExamplePixelShaders shadertype);

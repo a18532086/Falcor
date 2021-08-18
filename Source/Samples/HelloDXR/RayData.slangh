@@ -24,6 +24,14 @@
 #define MAX_DEPTH 2
 #endif
 
+#ifndef MAX_POW_TWO
+#define MAX_POw_TWO 6
+#endif
+
+#ifndef MAX_GROUPSIZE_X
+#define MAX_GROUPSIZE_X 1024
+#endif
+
 struct Particle{
     float3 center;
     float scale;
@@ -53,9 +61,15 @@ void getNullPackedSpriteHitInfo(inout PackedSpriteHitInfo NullItem){
     }
 }
 
-uint getOrVal(uint val, uint bitStride, uint offset){
+uint getOrVal(uint val, uint bitStride, int offset){
     uint mask = bitStride == 32 ? 0xffffffff : ((1 << bitStride) - 1);
     return (val & mask) << offset;
+}
+
+uint NextPow2( uint Val )
+{
+    uint Mask = (1 << firstbithigh(Val)) - 1;
+    return (Val + Mask) & ~Mask;
 }
 
 
@@ -78,18 +92,18 @@ struct SpriteRayHitInfo{
         int elementRedundancyBit = ((offset & kElementSizeMask) + stride) - kElementSize;
         int componentRedundancyBit = ((offset & kComponentMask) + stride) - kComponent;
         packInfo[fIdx][sIdx] &= ~mask;
-        packInfo[fIdx][sIdx] |= orVal;
+        packInfo[fIdx][sIdx] |= (orVal & mask);
         if (elementRedundancyBit > 0) {
             mask = getOrVal(kFullBit, elementRedundancyBit, 0);
-            orVal = getOrVal(val, elementRedundancyBit, 0);
+            orVal = getOrVal(val, elementRedundancyBit, elementRedundancyBit - stride);
             packInfo[fIdx + 1][0] &= ~mask;
-            packInfo[fIdx + 1][0] |= orVal;
+            packInfo[fIdx + 1][0] |= (orVal & mask);
         }
         else if (componentRedundancyBit > 0) {
             mask = getOrVal(kFullBit, componentRedundancyBit, 0);
-            orVal = getOrVal(val, componentRedundancyBit, 0);
+            orVal = getOrVal(val, componentRedundancyBit, componentRedundancyBit - stride);
             packInfo[fIdx][sIdx + 1] &= ~mask;
-            packInfo[fIdx][sIdx + 1] |= orVal;
+            packInfo[fIdx][sIdx + 1] |= (orVal & mask);
         }
         offset += stride;
     }
@@ -146,7 +160,7 @@ struct SpriteRayHitInfo{
 
 struct RGS2CS_t{
     float3 vDir; 
-    bool needBlend;
+    uint depth;
     float3 color;
     uint cnt;
     float3 specularCoefficient;
@@ -168,8 +182,7 @@ float4 proceduralTexture(Texture2D texture, SamplerState sampler, float2 UV){
 }
 
 struct HitPoint{
-    float3 p;
-    float t;
+    float2 UV;
     float hitT;
 }
 
@@ -179,8 +192,6 @@ struct DebugInfo{
     PackedSpriteHitInfo packInfo;
     SpriteRayHitInfo sInfo;
     SpriteRayHitInfo sInfoFromEncode;
-    // uint aabbIdxCnt;
-    // float4 colors[MAX_OIT_CNT_PERRAY];
 };
 #endif
 
@@ -200,18 +211,38 @@ float3 rotateAroundZ(float3 vec,float c,float s){
     return float3(vec.x * c - vec.y * s, vec.x * s + vec.y * c, vec.z);
 }
 
+static const float kInvalidFloatUV = 114.514;
+
+float4 getColorFromUV(Texture2D texture, SamplerState sampler, float2 UV, float4 mergeColor){
+    float4 retColor;
+    if(UV.x == kInvalidFloatUV){
+        retColor = mergeColor;
+    }
+    else{
+        float4 tmp = proceduralTexture(texture, sampler, UV);
+        retColor = float4(tmp.rgb * tmp.a, 1 - tmp.a);
+    }
+    return retColor;
+}
+
 float3 dealWithSpriteAndBlend(float3 vDir, RayDesc ray, SpriteRayHitInfo rayData, float3 color, Texture2D texture,
     SamplerState sampler, StructuredBuffer<Particle> particlePool,
     StructuredBuffer<Range> particleSystemRanges,uint threadID = 0 /* for debug */){
 
+    if (rayData.aabbHitCnt == 0){
+        //early return
+        return color;
+    }
+
     HitPoint arrayHitT[MAX_OIT_CNT_PERRAY + 1];
+
+    float4 mergeColor = float4(0,0,0,1);
 
     float tMax = rayData.hitT == -1 ?  100000 : rayData.hitT;
 
     for (uint i = 0; i < MAX_OIT_CNT_PERRAY + 1; ++i){
         arrayHitT[i].hitT = tMax;
-        arrayHitT[i].p = float3(0);
-        arrayHitT[i].t = 1;
+        arrayHitT[i].UV = float2(kInvalidFloatUV);
     }
 
     uint nowMaxIdx = 0;
@@ -224,21 +255,18 @@ float3 dealWithSpriteAndBlend(float3 vDir, RayDesc ray, SpriteRayHitInfo rayData
 
     float3x3 rotWorld2View = getNewBasisMat(right,up,viewDir);
 
-    SpriteRayHitInfo RGS_info = rayData;
-
-
     // To avoid flicker, sort AABBs by ID
-    for (uint i = 0; i < RGS_info.aabbHitCnt; ++i){
-        for (uint j = i + 1; j < RGS_info.aabbHitCnt; ++j){
-            if (RGS_info.aabbIdx[i] > RGS_info.aabbIdx[j]){
-                uint tmp = RGS_info.aabbIdx[i];
-                RGS_info.aabbIdx[i] = RGS_info.aabbIdx[j];
-                RGS_info.aabbIdx[j] = tmp;
+    for (uint i = 0; i < rayData.aabbHitCnt; ++i){
+        for (uint j = i + 1; j < rayData.aabbHitCnt; ++j){
+            if (rayData.aabbIdx[i] > rayData.aabbIdx[j]){
+                uint tmp = rayData.aabbIdx[i];
+                rayData.aabbIdx[i] = rayData.aabbIdx[j];
+                rayData.aabbIdx[j] = tmp;
             }
         }
     }
-    for (uint psIdx = 0; psIdx < RGS_info.aabbHitCnt; ++psIdx){
-        uint gIdx = RGS_info.aabbIdx[psIdx];
+    for (uint psIdx = 0; psIdx < rayData.aabbHitCnt; ++psIdx){
+        uint gIdx = rayData.aabbIdx[psIdx];
 
         //
 
@@ -250,9 +278,6 @@ float3 dealWithSpriteAndBlend(float3 vDir, RayDesc ray, SpriteRayHitInfo rayData
 
         uint IdxEnd = range.size + range.offset;
 
-        bool isHit = false;
-
-        float2 hitUV = float2(0.0);
 
         for (uint particle_ID = range.offset; particle_ID < IdxEnd; ++particle_ID){
             Particle pd = particlePool[particle_ID];
@@ -282,14 +307,13 @@ float3 dealWithSpriteAndBlend(float3 vDir, RayDesc ray, SpriteRayHitInfo rayData
 
                 if (nowHitT >= ray.TMin && nowHitT < tMax && all(abs(UV) < float2(1.0))){
                     UV = UV * float2(0.5) + float2(0.5);
-                    isHit = true;
-                    hitUV = UV;
                     //float4 spriteColor = float4((gIdx & 2) >> 1, gIdx & 1, gIdx & 1, 0.5);
-                    float4 spriteColor = proceduralTexture(texture, sampler, UV);
+                    // float4 spriteColor = proceduralTexture(texture, sampler, UV);
                     //HitPoint lastVal = {spriteColor.rgb * spriteColor.a, 1 - spriteColor.a, nowHitT};
                     HitPoint lastVal;
-                    lastVal.p = spriteColor.rgb * spriteColor.a;
-                    lastVal.t = 1.0 - spriteColor.a;
+                    // lastVal.p = spriteColor.rgb * spriteColor.a;
+                    // lastVal.t = 1.0 - spriteColor.a;
+                    lastVal.UV = UV;
                     lastVal.hitT = nowHitT;
 
                     for (uint i = 0;i < nowMaxIdx + 1; ++i){
@@ -302,43 +326,42 @@ float3 dealWithSpriteAndBlend(float3 vDir, RayDesc ray, SpriteRayHitInfo rayData
 
                     if (nowMaxIdx == MAX_OIT_CNT_PERRAY){
                         HitPoint merge;
-                        merge.p = arrayHitT[MAX_OIT_CNT_PERRAY - 1].p + (arrayHitT[MAX_OIT_CNT_PERRAY].p * arrayHitT[MAX_OIT_CNT_PERRAY - 1].t);
-                        merge.t = arrayHitT[MAX_OIT_CNT_PERRAY - 1].t * arrayHitT[MAX_OIT_CNT_PERRAY].t;
+                        float4 nColor = getColorFromUV(texture, sampler, arrayHitT[MAX_OIT_CNT_PERRAY - 1].UV, mergeColor);
+                        float4 nPlusOneColor = getColorFromUV(texture, sampler, arrayHitT[MAX_OIT_CNT_PERRAY].UV, mergeColor);
+                        mergeColor.rgb = nColor.rgb + nPlusOneColor.rgb * nPlusOneColor.a;
+                        mergeColor.a = nColor.a * nPlusOneColor.a;
                         merge.hitT = arrayHitT[MAX_OIT_CNT_PERRAY - 1].hitT;
+                        merge.UV = float2(kInvalidFloatUV);
                         arrayHitT[MAX_OIT_CNT_PERRAY - 1] = merge;
                         arrayHitT[MAX_OIT_CNT_PERRAY].hitT = tMax;
                     }
                     else{
                         ++nowMaxIdx;
-                    }
-
-                    
+                    } 
                 }
-
             }
         }
     }
     for (uint i = 0;i < nowMaxIdx; ++i){
         uint idx = nowMaxIdx - i - 1;
-        color = arrayHitT[idx].p + (color * arrayHitT[idx].t);
+        float4 srcColor = getColorFromUV(texture, sampler, arrayHitT[idx].UV, mergeColor);
+        color = srcColor.rgb + (color * srcColor.a);
     }
 #ifdef _DEBUG
     PackedSpriteHitInfo packInfo;
     for (uint i = 0; i < SPRITE_PACKED_HITINFO_SIZE; ++i){
         packInfo[i] = uint4(0);
     }
-    RGS_info.packTo(packInfo);
+    rayData.packTo(packInfo);
     SpriteRayHitInfo encodeSInfo;
     encodeSInfo.decode(packInfo);
     DebugInfo dbinfo = {
         nowMaxIdx,
         packInfo,
-        RGS_info,
+        rayData,
         encodeSInfo,
         // rayData.aabbHitCnt,
     };
-
-
     dBuffer[threadID] = dbinfo;
 #endif
     return color;

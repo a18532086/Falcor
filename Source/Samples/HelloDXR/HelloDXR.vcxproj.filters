@@ -15,5 +15,7 @@
     <ShaderSource Include="Blend.cs.slang" />
     <ShaderSource Include="RayData.slangh" />
     <ShaderSource Include="BlitUnormToRT.cs.slang" />
+    <ShaderSource Include="GenDispatchArgs.cs.slang" />
+    <ShaderSource Include="accRT.ps.slang" />
   </ItemGroup>
 </Project>

@@ -84,8 +84,11 @@ void HelloDXR::createParticleSystem(ExamplePixelShaders shadertype)
 #if defined(USE_EMITTER_AABB)
     mpRotateBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "particlePool", particleMaxSize);
     mpRangeBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "particleSystemRanges", static_cast<uint32_t>(mpParticleSystems.size()) + 1);
-    mpCSVars->setBuffer("particlePool", mpRotateBuffer);
-    mpCSVars->setBuffer("particleSystemRanges", mpRangeBuffer);
+    for (auto& mpCSVar : mpCSVars)
+    {
+        mpCSVar->setBuffer("particlePool", mpRotateBuffer);
+        mpCSVar->setBuffer("particleSystemRanges", mpRangeBuffer);
+    }
 #else
     mpRotateBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "rotatePool", particleMaxSize);
 #endif
@@ -157,9 +160,11 @@ void HelloDXR::onGuiRender(Gui* pGui)
     w.checkbox("Sorted", mGuiData.mSortSystem);
     w.dropdown("PixelShader", kPixelShaders, mGuiData.mPixelShaderIndex);
     w.text("Ray Tracing Time: " + std::to_string(mRTTime) + "ms");
+    w.text("Sprite Count: " + std::to_string(mSpriteCount));
+    w.text("Emitter Count: " + std::to_string(mpParticleSystems.size()));
 #ifdef _DEBUG
-    w.text("Blend Total Time: " + std::to_string(mMaxTotTime) );
-    w.text("Blend Sort Time: " + std::to_string(mMaxPartTime) );
+    w.text("Blend Total Time: " + std::to_string(mMaxTotTime));
+    w.text("Blend Sort Time: " + std::to_string(mMaxPartTime));
     w.text("Blend Sort Percent: " + std::to_string(mMaxPrecent) + " %");
 #endif
 
@@ -196,7 +201,7 @@ void HelloDXR::loadScene(const std::string& filename, const Fbo* pTargetFbo)
     mpRasterPass = RasterScenePass::create(mpScene, "Samples/HelloDXR/HelloDXR.ps.slang", "", "main");
 
     RtProgram::Desc rtProgDesc;
-    rtProgDesc.addShaderLibrary("Samples/HelloDXR/HelloDXR.rt.slang").setRayGen("rayGenIR2CS");
+    rtProgDesc.addShaderLibrary("Samples/HelloDXR/HelloDXR.rt.slang").setRayGen("rayGenIR");
     rtProgDesc.addHitGroup(0, "primaryClosestHitIR", "primaryAnyHitIR").addMiss(0, "primaryMissIR");
     rtProgDesc.addHitGroup(1, "", "shadowAnyHit").addMiss(1, "shadowMiss");
     rtProgDesc.addAABBHitGroup(0, "primaryClosestHitIR", "primaryAnyHitIR");
@@ -210,31 +215,47 @@ void HelloDXR::loadScene(const std::string& filename, const Fbo* pTargetFbo)
 #ifdef _DEBUG
     rtProgDesc.addDefine("_DEBUG", "1");
 #endif
+    rtProgDesc.addDefine("MAX_POW_TWO", std::to_string(kMaxGroupKind));
     rtProgDesc.setMaxTraceRecursionDepth(3); // 1 for calling TraceRay from RayGen, 1 for calling it from the primary-ray ClosestHitShader for reflections, 1 for reflection ray tracing a shadow ray
 
     rtProgDesc.setCompilerFlags(Shader::CompilerFlags::GenerateDebugInfo);
     //rtProgDesc.setCompilerFlags(Shader::CompilerFlags::DumpIntermediates);
 
-    ComputeProgram::Desc csProgDesc;
-    csProgDesc.addShaderLibrary("Samples/HelloDXR/Blend.cs.slang");
-    csProgDesc.csEntry("doBlendCSParallex");
-    csProgDesc.setCompilerFlags(Shader::CompilerFlags::GenerateDebugInfo);
-
-    mpRaytraceProgram = RtProgram::create(rtProgDesc);
-    mpCSProgram = ComputeProgram::create(csProgDesc);
+    mpRaytraceProgram = RtProgram::create(rtProgDesc,8 * sizeof(float));
+    for (uint csIdx = 0; csIdx < kMaxGroupKind; ++csIdx)
+    {
+        ComputeProgram::Desc csProgDesc;
+        csProgDesc.addShaderLibrary("Samples/HelloDXR/Blend.cs.slang");
+        csProgDesc.csEntry("doBlendCSParallex");
+        csProgDesc.setCompilerFlags(Shader::CompilerFlags::GenerateDebugInfo);
+        mpCSPrograms[csIdx] = ComputeProgram::create(csProgDesc);
+        mpCSPrograms[csIdx]->addDefine("MAX_SPRITE_PER_AABB_BIT_LSF16", std::to_string(csIdx));
 #ifdef _DEBUG
-    mpCSProgram->addDefine("_DEBUG", "1");
+        mpCSPrograms[csIdx]->addDefine("_DEBUG", "1");
 #endif
-    ComputeProgram::Desc blitProgDesc;
-    blitProgDesc.addShaderLibrary("Samples/HelloDXR/BlitUnormToRT.cs.slang");
-    blitProgDesc.csEntry("main");
-    blitProgDesc.setCompilerFlags(Shader::CompilerFlags::GenerateDebugInfo);
-    mpBlitProgram = ComputeProgram::create(blitProgDesc);
+        mpCSVars[csIdx] = ComputeVars::create(mpCSPrograms[csIdx].get());
+    }
+
+    ComputeProgram::Desc gDAProgDesc;
+    gDAProgDesc.addShaderLibrary("Samples/HelloDXR/GenDispatchArgs.cs.slang");
+    gDAProgDesc.csEntry("main");
+    gDAProgDesc.setCompilerFlags(Shader::CompilerFlags::GenerateDebugInfo);
+    mpGenDispatchArgsProgram = ComputeProgram::create(gDAProgDesc);
+    mpGenDispatchArgsProgram->addDefine("MAX_POW_TWO", std::to_string(kMaxGroupKind));
+
+    mpAccPass = FullScreenPass::create("Samples/HelloDXR/accRT.ps.slang");
 
     mpRtVars = RtProgramVars::create(mpRaytraceProgram, mpScene);
-    mpCSVars = ComputeVars::create(mpCSProgram.get());
-    mpBlitVars = ComputeVars::create(mpBlitProgram.get());
+
+    mpGenDispatchArgsVars = ComputeVars::create(mpGenDispatchArgsProgram.get());
     mpRaytraceProgram->setScene(mpScene);
+
+    mpRGSIndexCntBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "RGSIndexCntBuffer", kMaxGroupKind);
+    std::vector<uint> clearVector(kMaxGroupKind, 0);
+    mpRGSIndexCntClearBuffer = Buffer::create(clearVector.size() * sizeof(uint), ResourceBindFlags::None, Buffer::CpuAccess::None, clearVector.data());
+    mpDispatchArgsBuffer = Buffer::create(kMaxGroupKind * 12);
+    mpGenDispatchArgsVars->setBuffer("RGSIndexCntBuffer", mpRGSIndexCntBuffer);
+    mpGenDispatchArgsVars->setBuffer("gDispatchArgsBuffer", mpDispatchArgsBuffer);
 }
 
 void HelloDXR::onLoad(RenderContext* pRenderContext)
@@ -257,22 +278,39 @@ void HelloDXR::setPerFrameVars(const Fbo* pTargetFbo)
     cb["tanHalfFovY"] = std::tan(fovY * 0.5f);
     cb["sampleIndex"] = mSampleIndex++;
     cb["useDOF"] = mUseDOF;
+    if (mbMeasureDiff)
+    {
+        mbSpriteRT = !mbSpriteRT;
+    }
+
+    cb["bSpriteRT"] = mbSpriteRT;
     mpRtVars["gTex"] = mpTexture;
     mpRtVars["gSampler"] = mpLinearSampler;
     mpRtVars->getRayGenVars()["gOutput"] = mpRtOut;
 
-    mpCSVars["gTex"] = mpTexture;
-    mpCSVars["gSampler"] = mpLinearSampler;
-
-
+    for (auto& mpCSVar : mpCSVars)
+    {
+        mpCSVar["gTex"] = mpTexture;
+        mpCSVar["gSampler"] = mpLinearSampler;
+    }
+    auto pVars = mpAccPass->getVars();
+    pVars->setTexture("gOutput_0", mpCSBlendOuts[0]);
+    pVars->setTexture("gOutput_1", mpCSBlendOuts[1]);
+    mpAccPass->setVars(pVars);
 }
 
-void HelloDXR::renderRT(RenderContext* pContext, const Fbo* pTargetFbo)
+void HelloDXR::renderRT(RenderContext* pContext, const Fbo::SharedPtr& pTargetFbo)
 {
+    static double lastRTTime = 0.0;
     PROFILE("renderRT");
-    setPerFrameVars(pTargetFbo);
+    setPerFrameVars(pTargetFbo.get());
 
     pContext->clearUAV(mpRtOut->getUAV().get(), kClearColor);
+    for(auto& mpCSBlendOut: mpCSBlendOuts)
+    {
+        pContext->clearUAV(mpCSBlendOut->getUAV().get(), kClearColor);
+    }
+    pContext->copyBufferRegion(mpRGSIndexCntBuffer.get(), 0, mpRGSIndexCntClearBuffer.get(), 0, sizeof(uint) * kMaxGroupKind);
     if (mpTimer == nullptr)
     {
         mpTimer = GpuTimer::create();
@@ -280,10 +318,31 @@ void HelloDXR::renderRT(RenderContext* pContext, const Fbo* pTargetFbo)
     mpTimer->begin();
     mpScene->raytrace(pContext, mpRaytraceProgram.get(), mpRtVars, uint3(pTargetFbo->getWidth(), pTargetFbo->getHeight(), 1));
     mpTimer->end();
-    mRTTime = mpTimer->getElapsedTime();
 
-    mpCSProgram->dispatchCompute(pContext, mpCSVars.get(), uint3(mWidth , mHeight, 1));
+    const double nowRTTime = mpTimer->getElapsedTime();
+    if (!mbSpriteRT)
+    {
+        mRTTime = (nowRTTime - lastRTTime) * 0.125 + mRTTime * 0.875;
+    }
+    lastRTTime = nowRTTime;
+    if (!mbMeasureDiff)
+    {
+        mRTTime = nowRTTime;
+    }
+
+    // Fill Dispatch Arguments Buffer
+    //mpGenDispatchArgsProgram->dispatchCompute(pContext, mpGenDispatchArgsVars.get(), uint3(1, 1, 1));
+    //
+    //for (uint csIdx = 0; csIdx < kMaxGroupKind; ++csIdx)
+    //{
+    //    auto pState = ComputeState::create();
+    //    pState->setProgram(mpCSPrograms[csIdx]);
+    //    pContext->dispatchIndirect(pState.get(), mpCSVars[csIdx].get(), mpDispatchArgsBuffer.get(), csIdx * 12);
+    //}
+    // Plus All Depth Render Target
+    //mpAccPass->execute(pContext, pTargetFbo);
     pContext->blit(mpRtOut->getSRV(), pTargetFbo->getRenderTargetView(0));
+
 }
 
 void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPtr& pTargetFbo)
@@ -306,6 +365,7 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
     size_t bufOffset = 0;
     uint32_t rangeOffset = 0;
     std::vector<Range> ranges;
+    size_t totalSpriteCount = 0;
     for (auto it = mpParticleSystems.begin(); it != mpParticleSystems.end(); ++it)
     {
         if (mbPS)
@@ -321,13 +381,14 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
         }
         if (mbShowRasterPS)
         {
-            (*it)->render(pContext, pTargetFbo,mpCamera->getViewMatrix(), mpCamera->getProjMatrix());
+            (*it)->render(pContext, pTargetFbo, mpCamera->getViewMatrix(), mpCamera->getProjMatrix());
         }
 
         if (bshouldUpdateAABB)
         {
             std::vector<Particle> particleInfos;
             (*it)->getParticlesVertexInfo(particleInfos);
+            totalSpriteCount += particleInfos.size();
 #if defined(USE_EMITTER_AABB)
             std::vector<PS_Data> pds;
             AABB maxAABB(float3(FLT_MAX), float3(FLT_MIN));
@@ -357,7 +418,11 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
             bufOffset += rots.size() * sizeof(float);
 #endif
         }
-        
+
+    }
+    if (totalSpriteCount > 0)
+    {
+        mSpriteCount = totalSpriteCount;
     }
 
     if (mbCreatePS)
@@ -382,6 +447,8 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
         mpRtVars->setBuffer("particleSystemRanges", mpRangeBuffer);
         mpRtVars->setBuffer("particlePool", mpRotateBuffer);
         mpRtVars->setBuffer("RGS2CSBuffer", mpRGS2CSBuffer);
+        mpRtVars->setBuffer("RGSIndexCntBuffer", mpRGSIndexCntBuffer);
+        mpRtVars->setBuffer("RGSIndexBuffer", mpRGSIndexBuffer);
 #else
         mpRtVars->setBuffer("rotatePool", mpRotateBuffer);
 #endif
@@ -389,7 +456,7 @@ void HelloDXR::renderParticleSystem(RenderContext* pContext, const Fbo::SharedPt
         mpRtVars->setBuffer("dBuffer", mpDBuffer);
 #endif
         mpRaytraceProgram->setScene(mpScene);
-    }
+}
 
 }
 
@@ -400,7 +467,7 @@ void HelloDXR::onFrameRender(RenderContext* pRenderContext, const Fbo::SharedPtr
     if (mpScene)
     {
         mpScene->update(pRenderContext, gpFramework->getGlobalClock().getTime());
-        if (mRayTrace) renderRT(pRenderContext, pTargetFbo.get());
+        if (mRayTrace) renderRT(pRenderContext, pTargetFbo);
         else mpRasterPass->renderScene(pRenderContext, pTargetFbo);
         renderParticleSystem(pRenderContext, pTargetFbo);
     }
@@ -415,35 +482,49 @@ bool HelloDXR::onKeyEvent(const KeyboardEvent& keyEvent)
         mRayTrace = !mRayTrace;
         return true;
     }
+    // Press P to pause update of Particle System
     if (keyEvent.key == KeyboardEvent::Key::P && keyEvent.type == KeyboardEvent::Type::KeyPressed)
     {
         mbPS = !mbPS;
         return true;
     }
+    // Press O to force update the AABB
     if (keyEvent.key == KeyboardEvent::Key::O && keyEvent.type == KeyboardEvent::Type::KeyPressed)
     {
         mbUpdateAABB = true;
         return true;
     }
+    // Press I to show the raster Particle System
     if (keyEvent.key == KeyboardEvent::Key::I && keyEvent.type == KeyboardEvent::Type::KeyPressed)
     {
         mbShowRasterPS = !mbShowRasterPS;
         return true;
     }
+    // Press U to generate three emitter & move to test viewport
     if (keyEvent.key == KeyboardEvent::Key::U && keyEvent.type == KeyboardEvent::Type::KeyPressed)
     {
         createParticleSystem(ExamplePixelShaders::ConstColor);
         createParticleSystem(ExamplePixelShaders::ConstColor);
         createParticleSystem(ExamplePixelShaders::ConstColor);
+
+        // middle payload viewport
         mpCamera->setPosition(float3(-1.646739, 2.510957, 2.434580));
         mpCamera->setTarget(float3(-1.033757, 2.431306, 1.648509));
-        mpCamera->setUpVector(float3(0,1,0));
-        //mpCamera->setPosition(float3(-0.584588, 2.589808, 1.666172));
-        //mpCamera->setTarget(float3(-0.036677, 2.358391, 0.862282));
-        //mpCamera->setUpVector(float3(0,1,0));
+        mpCamera->setUpVector(float3(0, 1, 0));
+        // high payload viewport
+        //mpCamera->setPosition(float3(-0.437821, 2.918455, 0.665869));
+        //mpCamera->setTarget(float3(0.165983, 2.705342, -0.102248));
+        //mpCamera->setUpVector(float3(0, 1, 0));
         mbCreatePS = true;
         mbPS = false;
         mbUpdateAABB = true;
+        return true;
+    }
+    // Press Y to show intersection & blend time
+    if (keyEvent.key == KeyboardEvent::Key::Y && keyEvent.type == KeyboardEvent::Type::KeyPressed)
+    {
+        mbMeasureDiff = !mbMeasureDiff;
+        mbSpriteRT = mbMeasureDiff ? mbSpriteRT : true;
         return true;
     }
     if (mpScene && mpScene->onKeyEvent(keyEvent)) return true;
@@ -471,44 +552,42 @@ void HelloDXR::onResizeSwapChain(uint32_t width, uint32_t height)
     }
 
     mpRtOut = Texture::create2D(width, height, ResourceFormat::RGBA16Float, 1, 1, nullptr, Resource::BindFlags::UnorderedAccess | Resource::BindFlags::ShaderResource);
+    for (auto& mpCSBlendOut : mpCSBlendOuts)
+    {
+        mpCSBlendOut = Texture::create2D(width, height, ResourceFormat::RGBA16Float, 1, 1, nullptr, Resource::BindFlags::UnorderedAccess | Resource::BindFlags::ShaderResource);
+    }
     if (mpRaytraceProgram)
     {
 #ifdef _DEBUG
         mpDBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "dBuffer", height * width, ResourceBindFlags::UnorderedAccess);
 #endif
         mpRGS2CSBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "RGS2CSBuffer", height * width * 2, ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource);
+        mpRGSIndexBuffer = Buffer::createStructured(mpRaytraceProgram.get(), "RGSIndexBuffer", height * width * kMaxGroupKind * 2, ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource);
     }
-    if (mpCSProgram)
+    if (!mpCSPrograms.empty() && mpCSPrograms[0])
     {
 #ifdef _DEBUG
-        mpbaDBuffer = Buffer::createStructured(mpCSProgram.get(), "badBuffer", height * width * 2, ResourceBindFlags::UnorderedAccess);
+        mpbaDBuffer = Buffer::createStructured(mpCSPrograms[0].get(), "badBuffer", height * width, ResourceBindFlags::UnorderedAccess);
 #endif
-        mpLockBuffer = Buffer::createStructured(mpCSProgram.get(), "lockBuffer", height * width, ResourceBindFlags::UnorderedAccess);
-
-        mpUonrmRTBuffer = Buffer::createStructured(mpCSProgram.get(), "unormFBO", height * width * 2 * 3, ResourceBindFlags::UnorderedAccess);
-        std::vector<char> vClear(mpUonrmRTBuffer->getSize(), 0);
-        mpUonrmRTClearBuffer = Buffer::create(mpUonrmRTBuffer->getSize(), ResourceBindFlags::None, Buffer::CpuAccess::None,vClear.data());
-        mpCSVars->setBuffer("lockBuffer", mpLockBuffer);
-        mpCSVars->setBuffer("RGS2CSBuffer", mpRGS2CSBuffer);
-        mpCSVars->setBuffer("unormFBO", mpUonrmRTBuffer);
-        mpCSVars["CSCB"]["gDispatchX"] = mWidth;
-        mpCSVars->setTexture("gOutput", mpRtOut);
+        for (auto& mpCSVar : mpCSVars)
+        {
+            mpCSVar->setBuffer("RGS2CSBuffer", mpRGS2CSBuffer);
+            mpCSVar->setBuffer("RGSIndexBuffer", mpRGSIndexBuffer);
+            mpCSVar->setBuffer("RGSIndexCntBuffer", mpRGSIndexCntBuffer);
+            mpCSVar["CSCB"]["gDispatchX"] = mWidth;
+            mpCSVar["CSCB"]["gDispatchY"] = mHeight;
+            //mpCSVar->setTexture("gOutput", mpRtOut);
+            mpCSVar->setTexture("gOutput_0", mpCSBlendOuts[0]);
+            mpCSVar->setTexture("gOutput_1", mpCSBlendOuts[1]);
 #ifdef _DEBUG
-        mpCSVars->setBuffer("dBuffer", mpDBuffer);
-        mpCSVars->setBuffer("badBuffer", mpbaDBuffer);
+            mpCSVar->setBuffer("dBuffer", mpDBuffer);
+            mpCSVar->setBuffer("badBuffer", mpbaDBuffer);
 #endif
-    }
-
-    if (mpBlitProgram)
-    {
-        mpBlitVars->setBuffer("unormFBO", mpUonrmRTBuffer);
-        mpBlitVars->setTexture("gOutput", mpRtOut);
-
-        mpBlitVars["CSCB"]["gDispatchX"] = mWidth;
+        }
     }
 
 
-}
+    }
 
 
 #ifndef MAX_AABB_CNT_PERRAY
@@ -542,7 +621,7 @@ void HelloDXR::onResizeSwapChain(uint32_t width, uint32_t height)
 
 typedef std::array<uint4, SPRITE_PACKED_HITINFO_SIZE> PackedSpriteHitInfo;
 
-uint getOrVal(uint val, uint bitStride, uint offset) {
+uint getOrVal(uint val, uint bitStride, int offset) {
     uint mask = bitStride == 32 ? 0xffffffff : ((1 << bitStride) - 1);
     return (val & mask) << offset;
 }
@@ -567,18 +646,18 @@ struct SpriteRayHitInfo {
         int elementRedundancyBit = ((offset & kElementSizeMask) + stride) - kElementSize;
         int componentRedundancyBit = ((offset & kComponentMask) + stride) - kComponent;
         packInfo[fIdx][sIdx] &= ~mask;
-        packInfo[fIdx][sIdx] |= orVal;
+        packInfo[fIdx][sIdx] |= (orVal & mask);
         if (elementRedundancyBit > 0) {
             mask = getOrVal(kFullBit, elementRedundancyBit, 0);
-            orVal = getOrVal(val, elementRedundancyBit, 0);
+            orVal = getOrVal(val, elementRedundancyBit, elementRedundancyBit - stride);
             packInfo[fIdx + 1][0] &= ~mask;
-            packInfo[fIdx + 1][0] |= orVal;
+            packInfo[fIdx + 1][0] |= (orVal & mask);
         }
         else if (componentRedundancyBit > 0) {
             mask = getOrVal(kFullBit, componentRedundancyBit, 0);
-            orVal = getOrVal(val, componentRedundancyBit, 0);
+            orVal = getOrVal(val, componentRedundancyBit, componentRedundancyBit - stride);
             packInfo[fIdx][sIdx + 1] &= ~mask;
-            packInfo[fIdx][sIdx + 1] |= orVal;
+            packInfo[fIdx][sIdx + 1] |= (orVal & mask);
         }
         offset += stride;
     }
@@ -631,11 +710,13 @@ struct SpriteRayHitInfo {
 
 int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nShowCmd)
 {
+    // Test Pack Algorithm in CPU
     //SpriteRayHitInfo sInfo = {
-    //    3.72009f,
-    //    3,
+    //    -1,
+    //    6,
+    //    0,1,2,4,5,51,
     //};
-    //std::fill(std::begin(sInfo.aabbIdx), std::end(sInfo.aabbIdx), 0xff);
+    ////std::fill(std::begin(sInfo.aabbIdx), std::end(sInfo.aabbIdx), 0xff);
     //PackedSpriteHitInfo packInfo;
     //sInfo.pack(packInfo);
     //SpriteRayHitInfo tmp;

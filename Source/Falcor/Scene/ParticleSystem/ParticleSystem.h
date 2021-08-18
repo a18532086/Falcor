@@ -211,6 +211,7 @@ namespace Falcor
         uint32_t mMaxParticles;
         uint32_t mMaxEmitPerFrame;
         uint32_t mSimulateThreads;
+        uint32_t mSpriteCount;
         float mEmitTimer = 0.f;
 
         //buffers

@@ -39,14 +39,17 @@ cbuffer PerFrameCB
     float tanHalfFovY;
     uint sampleIndex;
     bool useDOF;
+    bool bSpriteRT;
     //uint gDispatchX;
     //uint numParticleSystemsCount;
 };
 
 StructuredBuffer<float> rotatePool;
 RWStructuredBuffer<RGS2CS_t> RGS2CSBuffer : register(u3);
+RWStructuredBuffer<uint> RGSIndexCntBuffer : register(u4);
+RWStructuredBuffer<uint> RGSIndexBuffer : register(u5);
 #ifdef _DEBUG
-RWStructuredBuffer<DebugInfo> dBuffer : register(u4);
+RWStructuredBuffer<DebugInfo> dBuffer : register(u6);
 #endif
 StructuredBuffer<Particle> particlePool;
 StructuredBuffer<Range> particleSystemRanges;
@@ -379,8 +382,10 @@ void rayGenIR(
         else{
             color = float3(0.01);
         }
+        if (bSpriteRT){
+            color = dealWithSpriteAndBlend(vDir, ray, SRHitInfo, color, gTex, gSampler, particlePool, particleSystemRanges, getDispatchIndex());
+        }
 
-        color = dealWithSpriteAndBlend(vDir, ray, SRHitInfo, color, gTex, gSampler, particlePool, particleSystemRanges, getDispatchIndex());
         color *= specularCoefficient;
 
         accColor.rgb += color;
@@ -420,10 +425,6 @@ void rayGenIR2CS(uniform RWTexture2D<float4> gOutput)
     float3 color = 0.0;
     PackedSpriteHitInfo clearPSHitInfo;
     getNullPackedSpriteHitInfo(clearPSHitInfo);
-    RGS2CS_t oData2CS[MAX_DEPTH];
-    for(uint i = 0; i < MAX_DEPTH; ++i){
-        oData2CS[i].needBlend = false;
-    }
 
     for (uint depth = 0; depth < MAX_DEPTH; ++depth){
         ShadingData sd;
@@ -472,7 +473,7 @@ void rayGenIR2CS(uniform RWTexture2D<float4> gOutput)
         // accColor.rgb += color;
 
         RGS2CS_t output;
-        output.needBlend = true;
+        output.depth = depth;
         output.vDir = vDir;
         output.ray = ray;
         output.packedSHitInfo = rayData.sHitInfo;
@@ -487,20 +488,19 @@ void rayGenIR2CS(uniform RWTexture2D<float4> gOutput)
             totalSpriteCnt += range.size;
         }
         output.cnt = totalSpriteCnt;
+        RGS2CSBuffer[MAX_DEPTH * getDispatchIndex() + depth] = output;
 
-        oData2CS[depth] = output;
-        
-
-
+        uint dispatchGroupIdx = min(firstbithigh(max(totalSpriteCnt, 32) - 1) - 4, MAX_POW_TWO - 1);
+        uint idxInRGSIndexBuffer = 0;
+        InterlockedAdd(RGSIndexCntBuffer[dispatchGroupIdx], 1, idxInRGSIndexBuffer);
+        uint SSCnt = DispatchRaysDimensions().x * DispatchRaysDimensions().y * MAX_DEPTH;
+        RGSIndexBuffer[SSCnt * dispatchGroupIdx + idxInRGSIndexBuffer] = MAX_DEPTH * getDispatchIndex() + depth;
         if (bShouldUpdateState){
             updateRayState(v, sd, SRHitInfo.hitT, depth == 0, specularCoefficient, ray, vDir);
         }
         else{
             break;
         }
-    }
-    for (uint depth = 0; depth < MAX_DEPTH; ++depth){
-        RGS2CSBuffer[MAX_DEPTH * getDispatchIndex() + depth] = oData2CS[depth];
     }
 }
 

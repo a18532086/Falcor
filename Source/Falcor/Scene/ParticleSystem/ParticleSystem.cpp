@@ -221,6 +221,11 @@ namespace Falcor
         uint32_t zero = 0;
         mpAliveList->getUAVCounter()->setBlob(&zero, 0, sizeof(uint32_t));
         pCtx->dispatch(mSimulateResources.pState.get(), mSimulateResources.pVars.get(), {std::max(mMaxParticles / mSimulateThreads, 1u), 1, 1});
+        auto pCB = static_cast<const VSPerFrame*>(mDrawResources.pVars->getParameterBlock(mBindLocations.drawCB)->getRawData());
+
+        const auto pIndirectArgs = static_cast<uint32_t const (*)[4]>(mpIndirectArgs->map(Buffer::MapType::Read));
+
+        mSpriteCount = (*pIndirectArgs)[1];
     }
 
     void ParticleSystem::render(RenderContext* pCtx, const Fbo::SharedPtr& pDst, glm::mat4 view, glm::mat4 proj)
@@ -242,19 +247,13 @@ namespace Falcor
     void ParticleSystem::getParticlesVertexInfo(std::vector<Particle>& particleInfos)
     {
 
-        auto pCB = static_cast<const VSPerFrame*>(mDrawResources.pVars->getParameterBlock(mBindLocations.drawCB)->getRawData());
-
-        const auto pIndirectArgs = static_cast<uint32_t const (*)[4]>(mpIndirectArgs->map(Buffer::MapType::Read));
-
-        const uint32_t& instanceCount = (*pIndirectArgs)[1];
-
-        particleInfos.resize(instanceCount);
+        particleInfos.resize(mSpriteCount);
 
         auto pMappedAliveList = static_cast<const uint32_t*>(mpAliveList->map(Buffer::MapType::Read));
 
         auto pMappedParticlePool = static_cast<const Particle*>(mpParticlePool->map(Buffer::MapType::Read));
 
-        for (uint32_t iID = 0;iID < instanceCount;++iID)
+        for (uint32_t iID = 0;iID < mSpriteCount;++iID)
         {
             auto& particleData = pMappedParticlePool[pMappedAliveList[iID]];
 
