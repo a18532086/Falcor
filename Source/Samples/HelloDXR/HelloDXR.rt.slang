@@ -45,9 +45,6 @@ cbuffer PerFrameCB
 };
 
 StructuredBuffer<float> rotatePool;
-RWStructuredBuffer<RGS2CS_t> RGS2CSBuffer : register(u3);
-RWStructuredBuffer<uint> RGSIndexCntBuffer : register(u4);
-RWStructuredBuffer<uint> RGSIndexBuffer : register(u5);
 #ifdef _DEBUG
 RWStructuredBuffer<DebugInfo> dBuffer : register(u6);
 #endif
@@ -60,7 +57,7 @@ struct ScatterRayData
 {
     PackedHitInfo packedHitInfo;        ///< Packed HitInfo data, or kInvalidIndex in the first component if ray missed.
     uint hitKind;
-    PackedSpriteHitInfo sHitInfo;
+    SpriteRayHitInfo sHitInfo;
 };
 
 struct PrimaryRayData
@@ -111,10 +108,7 @@ void primaryMiss(inout PrimaryRayData hitData)
 void primaryMissIR(inout ScatterRayData rayData : SV_RayPayload)
 {
     rayData.packedHitInfo.x = HitInfo::kInvalidIndex;
-    SpriteRayHitInfo tmp;
-    tmp.decode(rayData.sHitInfo);
-    tmp.hitT = -1;
-    tmp.packTo(rayData.sHitInfo);
+    rayData.sHitInfo.hitT = -1;
 }
 
 bool checkLightHit(uint lightIndex, float3 origin)
@@ -220,10 +214,7 @@ void primaryClosestHitIR(
     hit.barycentrics = attribs.barycentrics;
     rayData.packedHitInfo = hit.encode();
     rayData.hitKind = HitKind();
-    SpriteRayHitInfo tmp;
-    tmp.decode(rayData.sHitInfo);
-    tmp.hitT = RayTCurrent();
-    tmp.packTo(rayData.sHitInfo);
+    rayData.sHitInfo.hitT = RayTCurrent();
 }
 [shader("anyhit")]
 void primaryAnyHit(
@@ -246,14 +237,8 @@ void primaryAnyHitIR(
     inout ScatterRayData rayData : SV_RayPayload,
     BuiltInTriangleIntersectionAttributes   attribs)
 {
-    SpriteRayHitInfo tmp;
-    tmp.decode(rayData.sHitInfo);
     if (HitKind() == kSpriteHitKind){
-        if (tmp.aabbHitCnt < MAX_AABB_CNT_PERRAY){
-            uint idx = tmp.aabbHitCnt++;
-            tmp.aabbIdx[idx] = asuint(attribs.barycentrics.x);
-        }
-        tmp.packTo(rayData.sHitInfo);
+        rayData.sHitInfo.SetHitAt(asuint(attribs.barycentrics.x));
         IgnoreHit();
     }
     else{
@@ -338,8 +323,7 @@ void rayGenIR(
     float4 accColor = float4(0.0,0.0,0.0,1.0);
     float3 specularCoefficient = float3(1.0);
     float3 color = 0.0;
-    PackedSpriteHitInfo clearPSHitInfo;
-    getNullPackedSpriteHitInfo(clearPSHitInfo);
+    SpriteRayHitInfo clearPSHitInfo = (SpriteRayHitInfo)0;
 
     for (uint depth = 0; depth < MAX_DEPTH; ++depth){
         ShadingData sd;
@@ -347,8 +331,7 @@ void rayGenIR(
         rayData.packedHitInfo = { HitInfo::kInvalidIndex };
         rayData.sHitInfo = clearPSHitInfo;
         TraceRay(gRtScene, 0 /*rayFlags*/, 0xFF, 0 /* ray index*/, hitProgramCount, 0, ray, rayData);
-        SpriteRayHitInfo SRHitInfo;
-        SRHitInfo.decode(rayData.sHitInfo);
+        SpriteRayHitInfo SRHitInfo = rayData.sHitInfo;
         bool bShouldUpdateState = false;
         if (rayData.packedHitInfo.x != HitInfo::kInvalidIndex){
             bShouldUpdateState = true;
@@ -400,108 +383,6 @@ void rayGenIR(
     }
 
     gOutput[launchIndex.xy] = accColor;
-}
-
-[shader("raygeneration")]
-void rayGenIR2CS(uniform RWTexture2D<float4> gOutput)
-{
-    uint3 launchIndex = DispatchRaysIndex();
-    uint randSeed = rand_init(launchIndex.x + launchIndex.y * viewportDims.x, sampleIndex, 16);
-
-    RayDesc ray;
-    if (!useDOF)
-    {
-        ray = gScene.camera.computeRayPinhole(launchIndex.xy, viewportDims).toRayDesc();
-    }
-    else
-    {
-        float2 u = float2(rand_next(randSeed), rand_next(randSeed));
-        ray = gScene.camera.computeRayThinlens(launchIndex.xy, viewportDims, u).toRayDesc();
-    }
-
-    ScatterRayData rayData;
-    float3 vDir = getCameraViewDir();
-    float3 specularCoefficient = float3(1.0);
-    float3 color = 0.0;
-    PackedSpriteHitInfo clearPSHitInfo;
-    getNullPackedSpriteHitInfo(clearPSHitInfo);
-
-    for (uint depth = 0; depth < MAX_DEPTH; ++depth){
-        ShadingData sd;
-        VertexData v;
-        rayData.packedHitInfo = { HitInfo::kInvalidIndex };
-        rayData.sHitInfo = clearPSHitInfo;
-        TraceRay(gRtScene, 0 /*rayFlags*/, 0xFF, 0 /* ray index*/, hitProgramCount, 0, ray, rayData);
-        SpriteRayHitInfo SRHitInfo;
-        SRHitInfo.decode(rayData.sHitInfo);
-        bool bShouldUpdateState = false;
-        if (rayData.packedHitInfo.x != HitInfo::kInvalidIndex){
-            bShouldUpdateState = true;
-            HitInfo tmpHit;
-            tmpHit.decode(rayData.packedHitInfo);
-            v = gScene.getVertexData(tmpHit);
-            //
-            uint materialID = gScene.getMaterialID(tmpHit.instanceID);
-            sd = prepareShadingData(v, materialID, gScene.materials[materialID], gScene.materialResources[materialID], -ray.Direction, 0);
-
-            color = float3(0);
-
-            float3 posW = ray.Origin + ray.Direction * SRHitInfo.hitT;
-
-            if (rayData.hitKind == kSpriteHitKind){
-                color = float3(0,0,1);
-                bShouldUpdateState = false;
-            }
-            else{
-                for (int i = 0; i < gScene.getLightCount(); i++)
-                {
-                    if (checkLightHit(i, posW) == false)
-                    {
-                        color += evalMaterial(sd, gScene.getLight(i), 1).color;
-                    }
-                }
-            }
-
-            color += sd.emissive;
-        }
-        else{
-            color = float3(0.01);
-        }
-
-        // color = dealWithSpriteAndBlend(vDir, ray, rayData, color);
-
-        // accColor.rgb += color;
-
-        RGS2CS_t output;
-        output.depth = depth;
-        output.vDir = vDir;
-        output.ray = ray;
-        output.packedSHitInfo = rayData.sHitInfo;
-        output.color = color;
-        output.specularCoefficient = specularCoefficient;
-        output.setPos(launchIndex.xy);
-
-        uint totalSpriteCnt = 0;
-        for (uint psIdx = 0; psIdx < SRHitInfo.aabbHitCnt; ++psIdx){
-            uint gIdx = SRHitInfo.aabbIdx[psIdx];
-            Range range = particleSystemRanges[gIdx];
-            totalSpriteCnt += range.size;
-        }
-        output.cnt = totalSpriteCnt;
-        RGS2CSBuffer[MAX_DEPTH * getDispatchIndex() + depth] = output;
-
-        uint dispatchGroupIdx = min(firstbithigh(max(totalSpriteCnt, 32) - 1) - 4, MAX_POW_TWO - 1);
-        uint idxInRGSIndexBuffer = 0;
-        InterlockedAdd(RGSIndexCntBuffer[dispatchGroupIdx], 1, idxInRGSIndexBuffer);
-        uint SSCnt = DispatchRaysDimensions().x * DispatchRaysDimensions().y * MAX_DEPTH;
-        RGSIndexBuffer[SSCnt * dispatchGroupIdx + idxInRGSIndexBuffer] = MAX_DEPTH * getDispatchIndex() + depth;
-        if (bShouldUpdateState){
-            updateRayState(v, sd, SRHitInfo.hitT, depth == 0, specularCoefficient, ray, vDir);
-        }
-        else{
-            break;
-        }
-    }
 }
 
 

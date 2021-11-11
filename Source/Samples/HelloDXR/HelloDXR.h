@@ -81,8 +81,6 @@ private:
     SceneBuilder::SharedPtr mpSceneBuilder;
 
     RtProgram::SharedPtr mpRaytraceProgram = nullptr;
-    std::array<ComputeProgram::SharedPtr, kMaxGroupKind> mpCSPrograms{};
-    ComputeProgram::SharedPtr mpGenDispatchArgsProgram = nullptr;
     Camera::SharedPtr mpCamera;
     ParticleSystem::SharedPtr mpPSys;
 
@@ -97,27 +95,18 @@ private:
     uint32_t mWidth = 1;
     uint32_t mHeight = 1;
     RtProgramVars::SharedPtr mpRtVars;
-    std::array <ComputeVars::SharedPtr, kMaxGroupKind> mpCSVars;
-    ComputeVars::SharedPtr mpGenDispatchArgsVars;
     //RtSceneRenderer::SharedPtr mpRtRenderer;
     Texture::SharedPtr mpRtOut;
-    std::array<Texture::SharedPtr,2> mpCSBlendOuts;
     std::vector<ParticleSystem::SharedPtr> mpParticleSystems;
     std::vector<PixelShaderData> mPsData;
     std::vector<Texture::SharedPtr> mpTextures;
     Buffer::SharedPtr mpRotateBuffer;
     Buffer::SharedPtr mpRangeBuffer;
-    Buffer::SharedPtr mpRGS2CSBuffer;
-    Buffer::SharedPtr mpRGSIndexCntBuffer;
-    Buffer::SharedPtr mpRGSIndexCntClearBuffer;
-    Buffer::SharedPtr mpDispatchArgsBuffer;
 
-    Buffer::SharedPtr mpRGSIndexBuffer;
     GpuTimer::SharedPtr mpTimer;
     Texture::SharedPtr mpTexture;
     Sampler::SharedPtr mpLinearSampler;
 
-    FullScreenPass::SharedPtr mpAccPass;
     double mRTTime = 0.0;
     size_t mSpriteCount = 0;
 #ifdef _DEBUG
